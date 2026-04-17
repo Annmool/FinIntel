@@ -217,9 +217,9 @@ function App() {
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {watchlist.map((item) => (
               <div key={item._id} className="list-item" onClick={() => fetchStockData(item.symbol)}>
-                <span style={{ fontWeight: '600' }}>{item.symbol}</span>
+                <span style={{ fontWeight: '600', color: 'var(--warning)' }}>{item.symbol}</span>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <Star size={14} color="var(--warning)" />
+                  <Star size={14} color="var(--warning)" fill="var(--warning)" />
                   <button onClick={async (e) => { e.stopPropagation(); await axios.delete(`https://finintel-qj46.onrender.com/api/watchlist/${user.uid}/${item.symbol}`); fetchWatchlist(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>X</button>
                 </div>
               </div>
