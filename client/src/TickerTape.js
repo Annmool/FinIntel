@@ -6,7 +6,7 @@ const TickerTape = () => {
 
     useEffect(() => {
         const fetchTicker = () => {
-            axios.get('http://localhost:5000/api/ticker-tape')
+            axios.get('https://finintel-qj46.onrender.com/api/ticker-tape')
                 .then(res => { if (res.data.length > 0) setStocks(res.data); })
                 .catch(() => {});
         };
