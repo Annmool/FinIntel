@@ -22,7 +22,11 @@ const groq = new Groq({ apiKey: process.env.GROQ_KEY });
 const TWELVE_DATA_URL = "https://api.twelvedata.com";
 const FINNHUB_URL = "https://finnhub.io/api/v1";
 
-app.use(cors());
+app.use(cors({
+    origin: ["http://localhost:3000", "https://finintel.pages.dev"], 
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true
+}));
 app.use(express.json());
 
 // --- 1. Database Connection ---
@@ -266,4 +270,5 @@ app.post('/api/ai-analysis', async (req, res) => {
     } catch (error) { res.status(500).send("AI Error"); }
 });
 
-app.listen(5000, () => console.log("🚀 Server running on port 5000"));
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));

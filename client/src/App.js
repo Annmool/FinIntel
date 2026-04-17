@@ -44,7 +44,7 @@ function App() {
         setAlerts([]);
       }
     });
-    axios.get('http://localhost:5000/api/market-briefing').then(res => setBriefing(res.data));
+    axios.get('https://finintel-qj46.onrender.com/api/market-briefing').then(res => setBriefing(res.data));
     return () => unsubscribe();
   }, [theme]);
 
@@ -52,24 +52,24 @@ function App() {
   useEffect(() => {
     const timer = setTimeout(() => {
       if (symbol.length > 1 && !data) {
-        axios.get(`http://localhost:5000/api/search/${symbol}`).then(res => setSuggestions(res.data));
+        axios.get(`https://finintel-qj46.onrender.com/api/search/${symbol}`).then(res => setSuggestions(res.data));
       } else { setSuggestions([]); }
     }, 500);
     return () => clearTimeout(timer);
   }, [symbol, data]);
 
   const fetchWatchlist = async (uid) => {
-    const res = await axios.get(`http://localhost:5000/api/watchlist/${uid}`);
+    const res = await axios.get(`https://finintel-qj46.onrender.com/api/watchlist/${uid}`);
     setWatchlist(res.data);
   };
 
   const fetchPortfolio = async (uid) => {
-    const res = await axios.get(`http://localhost:5000/api/portfolio/${uid}`);
+    const res = await axios.get(`https://finintel-qj46.onrender.com/api/portfolio/${uid}`);
     setPortfolio(res.data);
   };
 
   const fetchAlerts = async (uid) => {
-    const res = await axios.get(`http://localhost:5000/api/alerts/${uid}`);
+    const res = await axios.get(`https://finintel-qj46.onrender.com/api/alerts/${uid}`);
     setAlerts(res.data);
   };
 
@@ -84,9 +84,9 @@ function App() {
     setAiAnalysis("");
     try {
       const [stockRes, newsRes, fundRes] = await Promise.all([
-        axios.get(`http://localhost:5000/api/stock/${sym}`),
-        axios.get(`http://localhost:5000/api/news/${sym}`),
-        axios.get(`http://localhost:5000/api/fundamentals/${sym}`)
+        axios.get(`https://finintel-qj46.onrender.com/api/stock/${sym}`),
+        axios.get(`https://finintel-qj46.onrender.com/api/news/${sym}`),
+        axios.get(`https://finintel-qj46.onrender.com/api/fundamentals/${sym}`)
       ]);
       
       if (stockRes.data.status === 'error' || !stockRes.data.values || stockRes.data.values.length === 0) {
@@ -114,14 +114,14 @@ function App() {
 
     if (type === 'WATCH') {
         try {
-            await axios.post('http://localhost:5000/api/watchlist', { symbol: data?.meta?.symbol, userId: currUser.uid });
+            await axios.post('https://finintel-qj46.onrender.com/api/watchlist', { symbol: data?.meta?.symbol, userId: currUser.uid });
             fetchWatchlist(currUser.uid);
             showToast("Added to Watchlist");
         } catch (e) { showToast("Already in Watchlist", "error"); }
     } else if (type === 'PORTFOLIO') {
         const qty = prompt(`Shares of ${data?.meta?.symbol}?`);
         if (qty && !isNaN(qty)) {
-            await axios.post('http://localhost:5000/api/portfolio', { userId: currUser.uid, symbol: data?.meta?.symbol, qty: parseFloat(qty), price: data?.values[0].close });
+            await axios.post('https://finintel-qj46.onrender.com/api/portfolio', { userId: currUser.uid, symbol: data?.meta?.symbol, qty: parseFloat(qty), price: data?.values[0].close });
             fetchPortfolio(currUser.uid);
             showToast("Added to Portfolio");
         }
@@ -131,7 +131,7 @@ function App() {
             const targetPrice = parseFloat(targetPriceStr);
             const currentPrice = parseFloat(data?.values[0].close);
             const condition = targetPrice > currentPrice ? 'ABOVE' : 'BELOW';
-            await axios.post('http://localhost:5000/api/alerts', { userId: currUser.uid, symbol: data?.meta?.symbol, targetPrice, condition });
+            await axios.post('https://finintel-qj46.onrender.com/api/alerts', { userId: currUser.uid, symbol: data?.meta?.symbol, targetPrice, condition });
             fetchAlerts(currUser.uid);
             showToast(`Alert set for $${targetPrice}`);
         }
@@ -141,7 +141,7 @@ function App() {
   const getAIInsight = async () => {
     setAiLoading(true);
     try {
-      const res = await axios.post('http://localhost:5000/api/ai-analysis', {
+      const res = await axios.post('https://finintel-qj46.onrender.com/api/ai-analysis', {
         symbol: data?.meta?.symbol, price: data?.values[0].close,
         rsi: calculateRSI(data.values), sentiment: avgSent > 0 ? "Bullish" : "Bearish", news: news
       });
@@ -211,7 +211,7 @@ function App() {
                 <span style={{ fontWeight: '600' }}>{item.symbol}</span>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <Star size={14} color="var(--warning)" />
-                  <button onClick={async (e) => { e.stopPropagation(); await axios.delete(`http://localhost:5000/api/watchlist/${user.uid}/${item.symbol}`); fetchWatchlist(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>X</button>
+                  <button onClick={async (e) => { e.stopPropagation(); await axios.delete(`https://finintel-qj46.onrender.com/api/watchlist/${user.uid}/${item.symbol}`); fetchWatchlist(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>X</button>
                 </div>
               </div>
             ))}
@@ -239,7 +239,7 @@ function App() {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginTop: '4px' }}>
                   <span className="text-muted text-small">Entry: ${p.price ? parseFloat(p.price).toFixed(2) : '--'}</span>
-                  <button onClick={async () => { await axios.delete(`http://localhost:5000/api/portfolio/${p._id}`); fetchPortfolio(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>Delete</button>
+                  <button onClick={async () => { await axios.delete(`https://finintel-qj46.onrender.com/api/portfolio/${p._id}`); fetchPortfolio(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>Delete</button>
                 </div>
               </div>
             ))}
@@ -259,7 +259,7 @@ function App() {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginTop: '4px' }}>
                   <span className="text-muted text-small">{a.condition} ${a.targetPrice}</span>
-                  <button onClick={async () => { await axios.delete(`http://localhost:5000/api/alerts/${a._id}`); fetchAlerts(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>Delete</button>
+                  <button onClick={async () => { await axios.delete(`https://finintel-qj46.onrender.com/api/alerts/${a._id}`); fetchAlerts(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>Delete</button>
                 </div>
               </div>
             ))}
