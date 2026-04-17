@@ -113,11 +113,20 @@ function App() {
     if (!currUser) return;
 
     if (type === 'WATCH') {
-        try {
-            await axios.post('https://finintel-qj46.onrender.com/api/watchlist', { symbol: data?.meta?.symbol, userId: currUser.uid });
-            fetchWatchlist(currUser.uid);
-            showToast("Added to Watchlist");
-        } catch (e) { showToast("Already in Watchlist", "error"); }
+        const existingItem = watchlist.find(item => item.symbol === data?.meta?.symbol);
+        if (existingItem) {
+            try {
+                await axios.delete(`https://finintel-qj46.onrender.com/api/watchlist/${currUser.uid}/${data?.meta?.symbol}`);
+                fetchWatchlist(currUser.uid);
+                showToast("Removed from Watchlist");
+            } catch (e) { showToast("Error removing from Watchlist", "error"); }
+        } else {
+            try {
+                await axios.post('https://finintel-qj46.onrender.com/api/watchlist', { symbol: data?.meta?.symbol, userId: currUser.uid });
+                fetchWatchlist(currUser.uid);
+                showToast("Added to Watchlist");
+            } catch (e) { showToast("Error adding to Watchlist", "error"); }
+        }
     } else if (type === 'PORTFOLIO') {
         const qty = prompt(`Shares of ${data?.meta?.symbol}?`);
         if (qty && !isNaN(qty)) {
@@ -359,9 +368,19 @@ function App() {
                       </h1>
                     </div>
                     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                      <button onClick={() => handleProtectedAction('WATCH')} className="btn-outline">
-                        <Star size={16} /> Watch
-                      </button>
+                      {(() => {
+                        const isWatching = data ? watchlist.some(item => item.symbol === data.meta.symbol) : false;
+                        return (
+                          <button 
+                            onClick={() => handleProtectedAction('WATCH')} 
+                            className="btn-outline"
+                            style={isWatching ? { borderColor: 'var(--warning)', color: 'var(--warning)' } : {}}
+                          >
+                            <Star size={16} fill={isWatching ? "var(--warning)" : "none"} color={isWatching ? "var(--warning)" : "currentColor"} /> 
+                            {isWatching ? "Watching" : "Watch"}
+                          </button>
+                        );
+                      })()}
                       <button onClick={() => handleProtectedAction('ALERT')} className="btn-outline">
                         <Bell size={16} /> Alert
                       </button>
