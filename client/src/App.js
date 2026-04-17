@@ -450,6 +450,13 @@ function App() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          <footer style={{ marginTop: 'auto', paddingTop: '32px', borderTop: '1px solid var(--border-subtle)', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.85rem' }}>
+            <p style={{ margin: '0 0 8px 0' }}>&copy; {new Date().getFullYear()} FinIntel. All Rights Reserved.</p>
+            <p style={{ margin: 0 }}>
+              Designed & Developed by <span style={{ color: 'var(--accent)', fontWeight: '600', letterSpacing: '0.5px' }}>Anmol</span>
+            </p>
+          </footer>
         </main>
       </div>
 
