@@ -54,8 +54,18 @@ function App() {
         setAlerts([]);
       }
     });
-    axios.get(`${API_URL}/api/market-briefing`).then(res => setBriefing(res.data));
-    return () => unsubscribe();
+    
+    const fetchBriefing = () => {
+      axios.get(`${API_URL}/api/market-briefing`).then(res => setBriefing(res.data)).catch(() => {});
+    };
+    
+    fetchBriefing(); // Fetch immediately
+    const briefingInterval = setInterval(fetchBriefing, 5 * 60 * 1000); // Auto-refresh every 5 minutes
+
+    return () => {
+      unsubscribe();
+      clearInterval(briefingInterval);
+    };
   }, [theme]);
 
   // Autocomplete Logic
