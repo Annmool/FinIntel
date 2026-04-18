@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X } from 'lucide-react';
 import StockChart from './StockChart';
 import TickerTape from './TickerTape';
 import { calculateRSI } from './utils/indicators';
@@ -26,6 +26,7 @@ function App() {
   const [aiLoading, setAiLoading] = useState(false);
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [appError, setAppError] = useState('');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   
   const getCurrency = (sym) => sym?.endsWith('.NS') || sym?.endsWith('.BO') ? '₹' : '$';
   const currencySymbol = getCurrency(data?.meta?.symbol);
@@ -221,7 +222,7 @@ function App() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {watchlist.map((item) => (
-              <div key={item._id} className="list-item" onClick={() => fetchStockData(item.symbol)}>
+              <div key={item._id} className="list-item" onClick={() => { fetchStockData(item.symbol); setIsMobileMenuOpen(false); }}>
                 <span style={{ fontWeight: '600', color: 'var(--warning)' }}>{item.symbol}</span>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <Star size={14} color="var(--warning)" fill="var(--warning)" />
