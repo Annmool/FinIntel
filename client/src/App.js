@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download } from 'lucide-react';
+import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download, BookOpen } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import Academy from './Academy';
 import StockChart from './StockChart';
 import TickerTape from './TickerTape';
 import { calculateRSI } from './utils/indicators';
@@ -29,6 +30,7 @@ function App() {
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [appError, setAppError] = useState('');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [showAcademy, setShowAcademy] = useState(false);
   
   const getCurrency = (sym) => sym?.endsWith('.NS') || sym?.endsWith('.BO') ? '₹' : '$';
   const currencySymbol = getCurrency(data?.meta?.symbol);
@@ -277,6 +279,11 @@ function App() {
               Sign In to Save Data
             </button>
           )}
+
+          <button onClick={() => { setShowAcademy(true); setIsMobileMenuOpen(false); }} className="btn-outline" style={{ width: '100%', marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
+            <BookOpen size={18} />
+            Academy for Beginners
+          </button>
           
           <div className="sidebar-section-title">
             <span>Watchlist</span>
@@ -357,7 +364,11 @@ function App() {
         </aside>
 
         <main className="main-content">
-          <div style={{ position: 'relative', display: 'flex', gap: '12px', marginBottom: '32px', maxWidth: '600px' }}>
+          {showAcademy ? (
+            <Academy onClose={() => setShowAcademy(false)} />
+          ) : (
+            <>
+              <div style={{ position: 'relative', display: 'flex', gap: '12px', marginBottom: '32px', maxWidth: '600px' }}>
             <div style={{ position: 'relative', flex: 1 }}>
               <Search size={18} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
               <input 
@@ -577,6 +588,8 @@ function App() {
               Designed & Developed by <span style={{ color: 'var(--accent)', fontWeight: '600', letterSpacing: '0.5px' }}>Anmol</span>
             </p>
           </footer>
+            </>
+          )}
         </main>
       </div>
 
