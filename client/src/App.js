@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X } from 'lucide-react';
+import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download } from 'lucide-react';
+import jsPDF from 'jspdf';
+import 'jspdf-autotable';
 import StockChart from './StockChart';
 import TickerTape from './TickerTape';
 import { calculateRSI } from './utils/indicators';
@@ -174,6 +176,44 @@ function App() {
     return { label: "HOLD", color: "var(--warning)" };
   };
   const verdict = rsiScore ? getVerdict(rsiScore) : { label: "HOLD", color: "var(--text-tertiary)" };
+
+  const exportPortfolio = (type) => {
+    if (portfolio.length === 0) {
+      showToast('Portfolio is empty', 'error');
+      return;
+    }
+    const headers = ['Symbol', 'Quantity', 'Entry Price', 'Total Value'];
+    const rows = portfolio.map(p => [
+      p.symbol,
+      p.qty.toString(),
+      `${getCurrency(p.symbol)}${parseFloat(p.price || 0).toFixed(2)}`,
+      `${getCurrency(p.symbol)}${(p.qty * (p.price || 0)).toFixed(2)}`
+    ]);
+
+    if (type === 'csv') {
+      const csvContent = "data:text/csv;charset=utf-8," 
+        + [headers, ...rows].map(e => e.join(",")).join("\n");
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "FinIntel_Portfolio.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast('Portfolio downloaded as CSV');
+    } else if (type === 'pdf') {
+      const doc = new jsPDF();
+      doc.text("FinIntel - My Portfolio", 14, 15);
+      doc.autoTable({
+        head: [headers],
+        body: rows,
+        startY: 20,
+      });
+      doc.save("FinIntel_Portfolio.pdf");
+      showToast('Portfolio downloaded as PDF');
+    }
+  };
+
 
   return (
     <div style={{ width: '100%', overflowX: 'hidden' }}>
