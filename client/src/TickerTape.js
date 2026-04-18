@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 
+const API_URL = process.env.NODE_ENV === 'production' ? 'https://finintel-qj46.onrender.com' : 'http://localhost:5000';
+
 const TickerTape = () => {
     const [stocks, setStocks] = useState([]);
 
     useEffect(() => {
         const fetchTicker = () => {
-            axios.get('https://finintel-qj46.onrender.com/api/ticker-tape')
+            axios.get(`${API_URL}/api/ticker-tape`)
                 .then(res => { if (res.data.length > 0) setStocks(res.data); })
                 .catch(() => {});
         };
