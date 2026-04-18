@@ -7,6 +7,8 @@ const Sentiment = require('sentiment');
 const cron = require('node-cron');
 const Groq = require("groq-sdk");
 const NodeCache = require('node-cache');
+const YahooFinance = require('yahoo-finance2').default;
+const yahooFinance = new YahooFinance();
 
 // --- Models ---
 const Watchlist = require('./models/WatchList');
@@ -81,38 +83,69 @@ cron.schedule('*/5 * * * *', async () => {
 
 // --- 4. Main API Routes ---
 
-// Stock Data (Twelve Data) with Cache
+// Stock Data (Twelve Data with Yahoo Finance Fallback/NSE Support)
 app.get('/api/stock/:symbol', async (req, res) => {
     let rawSymbol = req.params.symbol.toUpperCase();
     let symbol = rawSymbol;
     let exchangeParam = '';
+    let preferYahoo = false;
 
     if (rawSymbol.includes(':')) {
         const parts = rawSymbol.split(':');
         symbol = parts[0];
         exchangeParam = `&exchange=${parts[1]}`;
-    } else if (rawSymbol.endsWith('.NS')) {
-        symbol = rawSymbol.replace('.NS', '');
-        exchangeParam = '&exchange=NSE';
-    } else if (rawSymbol.endsWith('.BO')) {
-        symbol = rawSymbol.replace('.BO', '');
-        exchangeParam = '&exchange=BSE';
+    } else if (rawSymbol.endsWith('.NS') || rawSymbol.endsWith('.BO')) {
+        preferYahoo = true;
     }
 
-    try {
-        const url = `${TWELVE_DATA_URL}/time_series?symbol=${symbol}${exchangeParam}&interval=1day&apikey=${process.env.STOCK_API_KEY}`;
-        const data = await fetchWithCache(url, `stock_${rawSymbol}`, 300);
+    const fetchFromYahoo = async (sym) => {
+        const oneYearAgo = new Date();
+        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+        const queryOptions = { period1: oneYearAgo.toISOString().split('T')[0], interval: '1d' };
+        const result = await yahooFinance.chart(sym, queryOptions);
+        if (!result || !result.quotes || result.quotes.length === 0) throw new Error("No data found on Yahoo Finance");
+        return {
+            meta: { symbol: sym },
+            values: result.quotes.filter(q => q.open && q.close).map(q => ({
+                datetime: q.date.toISOString().split('T')[0],
+                open: q.open.toString(),
+                high: q.high.toString(),
+                low: q.low.toString(),
+                close: q.close.toString(),
+                volume: q.volume ? q.volume.toString() : "0"
+            })).reverse()
+        };
+    };
 
-        if (data && data.meta) {
-            data.meta.symbol = rawSymbol; // Keep full symbol in response
+    try {
+        const cacheKey = `stock_${rawSymbol}`;
+        const cached = myCache.get(cacheKey);
+        if (cached) return res.json(cached);
+
+        let data;
+        if (preferYahoo) {
+            data = await fetchFromYahoo(rawSymbol);
+        } else {
+            try {
+                const url = `${TWELVE_DATA_URL}/time_series?symbol=${symbol}${exchangeParam}&interval=1day&apikey=${process.env.STOCK_API_KEY}`;
+                data = await fetchWithCache(url, cacheKey, 300);
+                if (data && data.meta) data.meta.symbol = rawSymbol;
+            } catch (err) {
+                // Fallback to Yahoo Finance if Twelve Data hits rate limit
+                data = await fetchFromYahoo(symbol); 
+                data.meta.symbol = rawSymbol;
+            }
         }
+
+        myCache.set(cacheKey, data, 300);
         res.json(data);
     } catch (e) {
-        res.status(429).json({ error: "Twelve Data Limit (8/min) hit." });
+        console.error("Stock Fetch Error:", e.message);
+        res.status(429).json({ error: "API Limit reached or symbol not found." });
     }
 });
 
-// Dual-API Search (Twelve Data with Finnhub Fallback)
+// Smart Search using Yahoo Finance (Supports Global Stocks including NSE/BSE)
 app.get('/api/search/:query', async (req, res) => {
     const { query } = req.params;
     const cacheKey = `search_${query.toLowerCase()}`;
@@ -120,23 +153,20 @@ app.get('/api/search/:query', async (req, res) => {
     if (cached) return res.json(cached);
 
     try {
-        const tdataRes = await axios.get(`${TWELVE_DATA_URL}/symbol_search?symbol=${query}&apikey=${process.env.STOCK_API_KEY}`);
-        if (tdataRes.data.data && tdataRes.data.data.length > 0) {
-            const formatted = tdataRes.data.data.slice(0, 5).map(s => ({
-                symbol: `${s.symbol}:${s.exchange}`,
-                instrument_name: `${s.instrument_name} (${s.country})`
+        const ySearch = await yahooFinance.search(query);
+        const formatted = ySearch.quotes
+            .filter(q => q.isYahooFinance && (q.quoteType === 'EQUITY' || q.quoteType === 'ETF'))
+            .slice(0, 6)
+            .map(s => ({
+                symbol: s.symbol,
+                instrument_name: `${s.shortname || s.longname || s.symbol} (${s.exchange})`
             }));
-            myCache.set(cacheKey, formatted, 3600);
-            return res.json(formatted);
-        }
-        throw new Error("Limit");
+        
+        myCache.set(cacheKey, formatted, 3600);
+        return res.json(formatted);
     } catch (error) {
-        try {
-            const fhubRes = await axios.get(`${FINNHUB_URL}/search?q=${query}&token=${process.env.FINNHUB_API_KEY}`);
-            const formatted = fhubRes.data.result.slice(0, 5).map(s => ({ symbol: s.symbol, instrument_name: s.description }));
-            myCache.set(cacheKey, formatted, 3600);
-            res.json(formatted);
-        } catch (e) { res.json([]); }
+        console.error("Search Error:", error.message);
+        res.json([]);
     }
 });
 
@@ -189,19 +219,41 @@ app.get('/api/news/:symbol', async (req, res) => {
 
 // Fundamentals
 app.get('/api/fundamentals/:symbol', async (req, res) => {
-    let cleanSymbol = req.params.symbol.split(':')[0].replace('.NS', '').replace('.BO', '');
-    const cacheKey = `fund_${cleanSymbol}`;
+    let rawSymbol = req.params.symbol.toUpperCase();
+    let cleanSymbol = rawSymbol.split(':')[0].replace('.NS', '').replace('.BO', '');
+    const isIndianStock = rawSymbol.endsWith('.NS') || rawSymbol.endsWith('.BO');
+    
+    const cacheKey = `fund_${rawSymbol}`;
     const cached = myCache.get(cacheKey);
     if (cached) return res.json(cached);
+
     try {
-        const [profileRes, metricRes] = await Promise.all([
-            axios.get(`${FINNHUB_URL}/stock/profile2?symbol=${cleanSymbol}&token=${process.env.FINNHUB_API_KEY}`),
-            axios.get(`${FINNHUB_URL}/stock/metric?symbol=${cleanSymbol}&metric=all&token=${process.env.FINNHUB_API_KEY}`)
-        ]);
-        const data = { profile: profileRes.data, metrics: metricRes.data.metric };
+        let data = {};
+        if (isIndianStock) {
+            const summary = await yahooFinance.quoteSummary(rawSymbol, { modules: ['summaryDetail', 'defaultKeyStatistics'] });
+            data = {
+                profile: { 
+                    marketCapitalization: summary.summaryDetail?.marketCap ? summary.summaryDetail.marketCap / 1000000 : null 
+                },
+                metrics: { 
+                    peBasicExclExtraTTM: summary.summaryDetail?.trailingPE || null,
+                    '52WeekHigh': summary.summaryDetail?.fiftyTwoWeekHigh || null,
+                    '52WeekLow': summary.summaryDetail?.fiftyTwoWeekLow || null
+                }
+            };
+        } else {
+            const [profileRes, metricRes] = await Promise.all([
+                axios.get(`${FINNHUB_URL}/stock/profile2?symbol=${cleanSymbol}&token=${process.env.FINNHUB_API_KEY}`),
+                axios.get(`${FINNHUB_URL}/stock/metric?symbol=${cleanSymbol}&metric=all&token=${process.env.FINNHUB_API_KEY}`)
+            ]);
+            data = { profile: profileRes.data, metrics: metricRes.data.metric };
+        }
         myCache.set(cacheKey, data, 3600);
         res.json(data);
-    } catch (e) { res.json({}); }
+    } catch (e) { 
+        console.error("Fundamentals Error:", e.message);
+        res.json({}); 
+    }
 });
 
 // --- 5. User-Specific Logic (Watchlist & Portfolio) ---
