@@ -3,7 +3,7 @@ import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download } from 'lucide-react';
 import jsPDF from 'jspdf';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 import StockChart from './StockChart';
 import TickerTape from './TickerTape';
 import { calculateRSI } from './utils/indicators';
@@ -204,7 +204,7 @@ function App() {
     } else if (type === 'pdf') {
       const doc = new jsPDF();
       doc.text("FinIntel - My Portfolio", 14, 15);
-      doc.autoTable({
+      autoTable(doc, {
         head: [headers],
         body: rows,
         startY: 20,
