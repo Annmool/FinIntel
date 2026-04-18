@@ -218,9 +218,31 @@ function App() {
   return (
     <div style={{ width: '100%', overflowX: 'hidden' }}>
       <TickerTape />
+      
+      <div className="mobile-header">
+        <h2 
+          className="gradient-text" 
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.4rem', cursor: 'pointer', margin: 0 }}
+          onClick={() => { setData(null); setSymbol(''); }}
+        >
+          <img src="/favicon.svg" alt="FinIntel Logo" style={{ width: '24px', height: '24px' }} />
+          FinIntel
+        </h2>
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className="btn-outline" style={{ padding: '6px', borderRadius: '50%' }}>
+            {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="btn-outline" style={{ padding: '6px', borderRadius: '8px', color: 'var(--text-primary)' }}>
+            {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
+        </div>
+      </div>
+
       <div className="dashboard-container">
-        <aside className="sidebar">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2rem' }}>
+        {isMobileMenuOpen && <div className="sidebar-overlay" onClick={() => setIsMobileMenuOpen(false)}></div>}
+        
+        <aside className={`sidebar ${isMobileMenuOpen ? 'open' : ''}`}>
+          <div className="desktop-only-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2rem' }}>
             <h2 
               className="gradient-text" 
               style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '1.8rem', letterSpacing: '-0.02em', cursor: 'pointer' }}
@@ -274,8 +296,20 @@ function App() {
           </div>
 
           <div className="sidebar-section-title">
-            <span>Portfolio</span>
-            <span className="badge neutral">{portfolio.length}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span>Portfolio</span>
+              <span className="badge neutral">{portfolio.length}</span>
+            </div>
+            {portfolio.length > 0 && (
+              <div style={{ display: 'flex', gap: '4px' }}>
+                <button onClick={() => exportPortfolio('csv')} className="btn-outline" style={{ padding: '2px 6px', fontSize: '0.65rem' }} title="Export CSV">
+                  <Download size={12} /> CSV
+                </button>
+                <button onClick={() => exportPortfolio('pdf')} className="btn-outline" style={{ padding: '2px 6px', fontSize: '0.65rem' }} title="Export PDF">
+                  <Download size={12} /> PDF
+                </button>
+              </div>
+            )}
           </div>
           {portfolio.length > 0 && (
             <div style={{ marginBottom: '12px', padding: '12px', background: 'var(--accent-bg)', borderRadius: 'var(--radius-md)', border: '1px solid var(--accent)' }}>
