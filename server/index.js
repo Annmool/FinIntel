@@ -201,9 +201,16 @@ app.get('/api/ticker-tape', async (req, res) => {
 // Morning Briefing
 app.get('/api/market-briefing', async (req, res) => {
     try {
-        const url = `https://newsapi.org/v2/everything?q=stock+market+premarket+today&language=en&sortBy=publishedAt&pageSize=10&apiKey=${process.env.NEWS_API_KEY}`;
-        const data = await fetchWithCache(url, "market_briefing", 600);
-        res.json(data.articles || []);
+        const url = `https://finnhub.io/api/v1/news?category=general&token=${process.env.FINNHUB_API_KEY}`;
+        const responseData = await fetchWithCache(url, "market_briefing", 300); // 5 minute cache
+        const data = (responseData || []).slice(0, 10).map(item => ({
+            title: item.headline,
+            url: item.url,
+            urlToImage: item.image,
+            source: { name: item.source },
+            publishedAt: new Date(item.datetime * 1000).toISOString()
+        }));
+        res.json(data);
     } catch (e) { res.json([]); }
 });
 
@@ -211,8 +218,15 @@ app.get('/api/market-briefing', async (req, res) => {
 app.get('/api/news/:symbol', async (req, res) => {
     try {
         let cleanSymbol = req.params.symbol.split(':')[0].replace('.NS', '').replace('.BO', '');
-        const response = await axios.get(`https://newsapi.org/v2/everything?q=${cleanSymbol}+stock&language=en&sortBy=publishedAt&pageSize=5&apiKey=${process.env.NEWS_API_KEY}`);
-        const articles = response.data.articles.map(a => ({ ...a, sentimentScore: sentiment.analyze(a.title || "").score }));
+        const ySearch = await yahooFinance.search(cleanSymbol);
+        const articles = ySearch.news.slice(0, 5).map(item => ({
+            title: item.title,
+            url: item.link,
+            urlToImage: item.thumbnail?.resolutions?.[0]?.url || null,
+            source: { name: item.publisher },
+            publishedAt: item.providerPublishTime,
+            sentimentScore: sentiment.analyze(item.title || "").score
+        }));
         res.json(articles);
     } catch (e) { res.json([]); }
 });
