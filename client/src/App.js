@@ -8,6 +8,8 @@ import { calculateRSI } from './utils/indicators';
 import { auth, provider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged } from "firebase/auth";
 
+const API_URL = process.env.NODE_ENV === 'production' ? 'https://finintel-qj46.onrender.com' : 'http://localhost:5000';
+
 function App() {
   const [user, setUser] = useState(null);
   const [symbol, setSymbol] = useState('');
@@ -24,6 +26,9 @@ function App() {
   const [aiLoading, setAiLoading] = useState(false);
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [appError, setAppError] = useState('');
+  
+  const getCurrency = (sym) => sym?.endsWith('.NS') || sym?.endsWith('.BO') ? '₹' : '$';
+  const currencySymbol = getCurrency(data?.meta?.symbol);
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
@@ -44,7 +49,7 @@ function App() {
         setAlerts([]);
       }
     });
-    axios.get('https://finintel-qj46.onrender.com/api/market-briefing').then(res => setBriefing(res.data));
+    axios.get(`${API_URL}/api/market-briefing`).then(res => setBriefing(res.data));
     return () => unsubscribe();
   }, [theme]);
 
@@ -52,24 +57,24 @@ function App() {
   useEffect(() => {
     const timer = setTimeout(() => {
       if (symbol.length > 1 && !data) {
-        axios.get(`https://finintel-qj46.onrender.com/api/search/${symbol}`).then(res => setSuggestions(res.data));
+        axios.get(`${API_URL}/api/search/${symbol}`).then(res => setSuggestions(res.data));
       } else { setSuggestions([]); }
     }, 500);
     return () => clearTimeout(timer);
   }, [symbol, data]);
 
   const fetchWatchlist = async (uid) => {
-    const res = await axios.get(`https://finintel-qj46.onrender.com/api/watchlist/${uid}`);
+    const res = await axios.get(`${API_URL}/api/watchlist/${uid}`);
     setWatchlist(res.data);
   };
 
   const fetchPortfolio = async (uid) => {
-    const res = await axios.get(`https://finintel-qj46.onrender.com/api/portfolio/${uid}`);
+    const res = await axios.get(`${API_URL}/api/portfolio/${uid}`);
     setPortfolio(res.data);
   };
 
   const fetchAlerts = async (uid) => {
-    const res = await axios.get(`https://finintel-qj46.onrender.com/api/alerts/${uid}`);
+    const res = await axios.get(`${API_URL}/api/alerts/${uid}`);
     setAlerts(res.data);
   };
 
@@ -84,9 +89,9 @@ function App() {
     setAiAnalysis("");
     try {
       const [stockRes, newsRes, fundRes] = await Promise.all([
-        axios.get(`https://finintel-qj46.onrender.com/api/stock/${sym}`),
-        axios.get(`https://finintel-qj46.onrender.com/api/news/${sym}`),
-        axios.get(`https://finintel-qj46.onrender.com/api/fundamentals/${sym}`)
+        axios.get(`${API_URL}/api/stock/${sym}`),
+        axios.get(`${API_URL}/api/news/${sym}`),
+        axios.get(`${API_URL}/api/fundamentals/${sym}`)
       ]);
       
       if (stockRes.data.status === 'error' || !stockRes.data.values || stockRes.data.values.length === 0) {
@@ -116,13 +121,13 @@ function App() {
         const existingItem = watchlist.find(item => item.symbol === data?.meta?.symbol);
         if (existingItem) {
             try {
-                await axios.delete(`https://finintel-qj46.onrender.com/api/watchlist/${currUser.uid}/${data?.meta?.symbol}`);
+                await axios.delete(`${API_URL}/api/watchlist/${currUser.uid}/${data?.meta?.symbol}`);
                 fetchWatchlist(currUser.uid);
                 showToast("Removed from Watchlist");
             } catch (e) { showToast("Error removing from Watchlist", "error"); }
         } else {
             try {
-                await axios.post('https://finintel-qj46.onrender.com/api/watchlist', { symbol: data?.meta?.symbol, userId: currUser.uid });
+                await axios.post(`${API_URL}/api/watchlist`, { symbol: data?.meta?.symbol, userId: currUser.uid });
                 fetchWatchlist(currUser.uid);
                 showToast("Added to Watchlist");
             } catch (e) { showToast("Error adding to Watchlist", "error"); }
@@ -130,19 +135,19 @@ function App() {
     } else if (type === 'PORTFOLIO') {
         const qty = prompt(`Shares of ${data?.meta?.symbol}?`);
         if (qty && !isNaN(qty)) {
-            await axios.post('https://finintel-qj46.onrender.com/api/portfolio', { userId: currUser.uid, symbol: data?.meta?.symbol, qty: parseFloat(qty), price: data?.values[0].close });
+            await axios.post(`${API_URL}/api/portfolio`, { userId: currUser.uid, symbol: data?.meta?.symbol, qty: parseFloat(qty), price: data?.values[0].close });
             fetchPortfolio(currUser.uid);
             showToast("Added to Portfolio");
         }
     } else if (type === 'ALERT') {
-        const targetPriceStr = prompt(`Current price of ${data?.meta?.symbol} is $${parseFloat(data?.values[0].close).toFixed(2)}.\nEnter target price to trigger alert:`);
+        const targetPriceStr = prompt(`Current price of ${data?.meta?.symbol} is ${currencySymbol}${parseFloat(data?.values[0].close).toFixed(2)}.\nEnter target price to trigger alert:`);
         if (targetPriceStr && !isNaN(targetPriceStr)) {
             const targetPrice = parseFloat(targetPriceStr);
             const currentPrice = parseFloat(data?.values[0].close);
             const condition = targetPrice > currentPrice ? 'ABOVE' : 'BELOW';
-            await axios.post('https://finintel-qj46.onrender.com/api/alerts', { userId: currUser.uid, symbol: data?.meta?.symbol, targetPrice, condition });
+            await axios.post(`${API_URL}/api/alerts`, { userId: currUser.uid, symbol: data?.meta?.symbol, targetPrice, condition });
             fetchAlerts(currUser.uid);
-            showToast(`Alert set for $${targetPrice}`);
+            showToast(`Alert set for ${currencySymbol}${targetPrice}`);
         }
     }
   };
@@ -150,7 +155,7 @@ function App() {
   const getAIInsight = async () => {
     setAiLoading(true);
     try {
-      const res = await axios.post('https://finintel-qj46.onrender.com/api/ai-analysis', {
+      const res = await axios.post(`${API_URL}/api/ai-analysis`, {
         symbol: data?.meta?.symbol, price: data?.values[0].close,
         rsi: calculateRSI(data.values), sentiment: avgSent > 0 ? "Bullish" : "Bearish", news: news
       });
@@ -220,7 +225,7 @@ function App() {
                 <span style={{ fontWeight: '600', color: 'var(--warning)' }}>{item.symbol}</span>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <Star size={14} color="var(--warning)" fill="var(--warning)" />
-                  <button onClick={async (e) => { e.stopPropagation(); await axios.delete(`https://finintel-qj46.onrender.com/api/watchlist/${user.uid}/${item.symbol}`); fetchWatchlist(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>X</button>
+                  <button onClick={async (e) => { e.stopPropagation(); await axios.delete(`${API_URL}/api/watchlist/${user.uid}/${item.symbol}`); fetchWatchlist(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>X</button>
                 </div>
               </div>
             ))}
@@ -247,8 +252,8 @@ function App() {
                   <span className="font-mono">{p.qty} shrs</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginTop: '4px' }}>
-                  <span className="text-muted text-small">Entry: ${p.price ? parseFloat(p.price).toFixed(2) : '--'}</span>
-                  <button onClick={async () => { await axios.delete(`https://finintel-qj46.onrender.com/api/portfolio/${p._id}`); fetchPortfolio(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>Delete</button>
+                  <span className="text-muted text-small">Entry: {getCurrency(p.symbol)}{p.price ? parseFloat(p.price).toFixed(2) : '--'}</span>
+                  <button onClick={async () => { await axios.delete(`${API_URL}/api/portfolio/${p._id}`); fetchPortfolio(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>Delete</button>
                 </div>
               </div>
             ))}
@@ -267,8 +272,8 @@ function App() {
                   <span className={`badge ${a.triggered ? 'positive' : 'neutral'}`}>{a.triggered ? 'Triggered' : 'Active'}</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginTop: '4px' }}>
-                  <span className="text-muted text-small">{a.condition} ${a.targetPrice}</span>
-                  <button onClick={async () => { await axios.delete(`https://finintel-qj46.onrender.com/api/alerts/${a._id}`); fetchAlerts(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>Delete</button>
+                  <span className="text-muted text-small">{a.condition} {getCurrency(a.symbol)}{a.targetPrice}</span>
+                  <button onClick={async () => { await axios.delete(`${API_URL}/api/alerts/${a._id}`); fetchAlerts(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>Delete</button>
                 </div>
               </div>
             ))}
@@ -363,7 +368,7 @@ function App() {
                       <h1 style={{ fontSize: '2.5rem', display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
                         {data.meta.symbol}
                         <span className="font-mono" style={{ color: 'var(--text-primary)', fontSize: '2rem' }}>
-                          ${parseFloat(data.values[0].close).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          {currencySymbol}{parseFloat(data.values[0].close).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </h1>
                     </div>
@@ -408,7 +413,7 @@ function App() {
                     {data.fundamentals?.profile?.marketCapitalization && (
                       <div className="metric-card">
                         <span className="metric-label">Market Cap</span>
-                        <span className="metric-value">${(data.fundamentals.profile.marketCapitalization / 1000).toFixed(2)}B</span>
+                        <span className="metric-value">{currencySymbol}{(data.fundamentals.profile.marketCapitalization / 1000).toFixed(2)}B</span>
                       </div>
                     )}
                     {data.fundamentals?.metrics?.['peBasicExclExtraTTM'] && (
@@ -420,7 +425,7 @@ function App() {
                     {data.fundamentals?.metrics?.['52WeekHigh'] && (
                       <div className="metric-card">
                         <span className="metric-label">52W High/Low</span>
-                        <span className="metric-value">${data.fundamentals.metrics['52WeekHigh'].toFixed(2)} / ${data.fundamentals.metrics['52WeekLow'].toFixed(2)}</span>
+                        <span className="metric-value">{currencySymbol}{data.fundamentals.metrics['52WeekHigh'].toFixed(2)} / {currencySymbol}{data.fundamentals.metrics['52WeekLow'].toFixed(2)}</span>
                       </div>
                     )}
                   </div>
@@ -448,23 +453,44 @@ function App() {
                 </div>
 
                 <div className="card">
-                  <h3 style={{ marginBottom: '20px' }}>Intelligence Feed: {data.meta.symbol}</h3>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                    {news.map((n, i) => (
-                      <div key={i} style={{ paddingBottom: '16px', borderBottom: i === news.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
-                        <a href={n.url} target="_blank" rel="noreferrer" style={{ fontWeight: '600', fontSize: '1.05rem', color: 'var(--text-primary)', display: 'block', marginBottom: '8px' }}>
-                          {n.title}
-                        </a>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                          <span className="text-muted text-small">{n.source?.name || "News Source"}</span>
-                          <span className={`badge ${n.sentimentScore > 0 ? 'positive' : n.sentimentScore < 0 ? 'negative' : 'neutral'}`}>
-                            Sentiment: {n.sentimentScore > 0 ? "Positive" : n.sentimentScore < 0 ? "Negative" : "Neutral"}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                    {news.length === 0 && <span className="text-muted">No recent news found.</span>}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h3 style={{ margin: 0 }}>Intelligence Feed: {data.meta.symbol}</h3>
+                    <span className="badge neutral">{news.length} Articles</span>
                   </div>
+                  
+                  {news.length > 0 ? (
+                    <div className="news-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+                      {news.map((n, i) => (
+                        <div key={i} className="news-card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: '20px', background: 'var(--bg-surface-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', transition: 'transform 0.2s, box-shadow 0.2s', cursor: 'pointer' }} onClick={() => window.open(n.url, '_blank')}>
+                          <div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                              <span className="text-muted text-small" style={{ fontWeight: '600', color: 'var(--accent)' }}>
+                                {n.source?.name || "News Source"}
+                              </span>
+                              {n.sentimentScore !== undefined && (
+                                <span className={`badge ${n.sentimentScore > 0 ? 'positive' : n.sentimentScore < 0 ? 'negative' : 'neutral'}`} style={{ fontSize: '0.7rem', padding: '2px 6px' }}>
+                                  {n.sentimentScore > 0 ? "Bullish" : n.sentimentScore < 0 ? "Bearish" : "Neutral"}
+                                </span>
+                              )}
+                            </div>
+                            <h4 style={{ margin: '0 0 12px 0', fontSize: '1.05rem', lineHeight: '1.4', color: 'var(--text-primary)' }}>
+                              {n.title}
+                            </h4>
+                          </div>
+                          
+                          {n.publishedAt && (
+                            <span className="text-muted text-small" style={{ display: 'block', marginTop: 'auto', paddingTop: '12px', borderTop: '1px solid var(--border-subtle)' }}>
+                              {new Date(n.publishedAt).toLocaleDateString()}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ padding: '30px', textAlign: 'center', background: 'var(--bg-surface-elevated)', borderRadius: 'var(--radius-md)' }}>
+                      <span className="text-muted">No recent news found for this stock.</span>
+                    </div>
+                  )}
                 </div>
               </motion.div>
             )}
