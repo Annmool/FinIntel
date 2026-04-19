@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookOpen, TrendingUp, ShieldAlert, LineChart, Brain, Rocket, X } from 'lucide-react';
+import { BookOpen, TrendingUp, LineChart, Brain, Rocket, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const Academy = ({ onClose }) => {
