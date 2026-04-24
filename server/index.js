@@ -14,6 +14,8 @@ const yahooFinance = new YahooFinance();
 const Watchlist = require('./models/WatchList');
 const Alert = require('./models/Alert');
 const Portfolio = require('./models/Portfolio');
+const VirtualAccount = require('./models/VirtualAccount');
+const PaperPortfolio = require('./models/PaperPortfolio');
 
 // --- Initialization ---
 const app = express();
@@ -201,17 +203,55 @@ app.get('/api/ticker-tape', async (req, res) => {
 // Morning Briefing
 app.get('/api/market-briefing', async (req, res) => {
     try {
+        const cacheKey = "market_briefing_cnbc";
+        const cached = myCache.get(cacheKey);
+        if (cached) return res.json(cached);
+
         const url = `https://finnhub.io/api/v1/news?category=general&token=${process.env.FINNHUB_API_KEY}`;
-        const responseData = await fetchWithCache(url, "market_briefing", 300); // 5 minute cache
-        const data = (responseData || []).slice(0, 10).map(item => ({
-            title: item.headline,
-            url: item.url,
-            urlToImage: item.image,
-            source: { name: item.source },
-            publishedAt: new Date(item.datetime * 1000).toISOString()
-        }));
-        res.json(data);
-    } catch (e) { res.json([]); }
+        const responseData = await fetchWithCache(url, "market_briefing_raw", 300); // 5 minute cache
+        
+        const newsList = (responseData || []).filter(item => item.headline && item.source && item.source.toLowerCase().includes('cnbc')).slice(0, 15).map(item => {
+            let image = item.image;
+            // Filter out generic Reuters posters or placeholders
+            if (image && (image.toLowerCase().includes('reuters') || image.toLowerCase().includes('default') || image.toLowerCase().includes('placeholder'))) {
+                image = null;
+            }
+            return {
+                title: item.headline,
+                url: item.url,
+                urlToImage: image,
+                source: { name: item.source },
+                publishedAt: new Date(item.datetime * 1000).toISOString()
+            };
+        });
+
+        const headlines = newsList.map(n => n.title).join(". ");
+        let aiPredictions = { higher: [], lower: [] };
+        
+        try {
+            const chatCompletion = await groq.chat.completions.create({
+                messages: [{ 
+                    role: "user", 
+                    content: `Based on these news headlines: "${headlines}", predict 3 stocks that will go higher and 3 stocks that will go lower. Return ONLY a JSON object in this exact format: {"higher": [{"symbol": "TICKER", "reason": "short reason"}], "lower": [{"symbol": "TICKER", "reason": "short reason"}]}`
+                }],
+                model: "llama-3.3-70b-versatile",
+                response_format: { type: "json_object" }
+            });
+            aiPredictions = JSON.parse(chatCompletion.choices[0].message.content);
+        } catch (err) {
+            console.error("Groq Briefing Error:", err.message);
+        }
+
+        const finalData = {
+            news: newsList.slice(0, 10),
+            predictions: aiPredictions
+        };
+
+        myCache.set(cacheKey, finalData, 300);
+        res.json(finalData);
+    } catch (e) { 
+        res.json({ news: [], predictions: { higher: [], lower: [] } }); 
+    }
 });
 
 // News + Sentiment
@@ -305,6 +345,95 @@ app.post('/api/portfolio', async (req, res) => {
 app.delete('/api/portfolio/:id', async (req, res) => {
     await Portfolio.findByIdAndDelete(req.params.id);
     res.send("Deleted");
+});
+
+// Paper Trading: Get Holdings
+app.get('/api/paper-portfolio/:userId', async (req, res) => {
+    const holdings = await PaperPortfolio.find({ userId: req.params.userId });
+    res.json(holdings);
+});
+
+// Paper Trading: Get Balance
+app.get('/api/virtual-account/:userId', async (req, res) => {
+    let account = await VirtualAccount.findOne({ userId: req.params.userId });
+    if (!account) {
+        account = new VirtualAccount({ userId: req.params.userId, balance: 100000 });
+        await account.save();
+    }
+    res.json(account);
+});
+
+// Paper Trading: Buy
+app.post('/api/paper-portfolio/buy', async (req, res) => {
+    const { userId, symbol, qty, price } = req.body;
+    const totalCost = qty * price;
+
+    let account = await VirtualAccount.findOne({ userId });
+    if (!account) {
+        account = new VirtualAccount({ userId, balance: 100000 });
+        await account.save();
+    }
+
+    if (account.balance < totalCost) {
+        return res.status(400).json({ error: "Insufficient virtual funds" });
+    }
+
+    account.balance -= totalCost;
+    await account.save();
+
+    let holding = await PaperPortfolio.findOne({ userId, symbol: symbol.toUpperCase() });
+    if (holding) {
+        const oldTotal = holding.qty * holding.price;
+        holding.qty += qty;
+        holding.price = (oldTotal + totalCost) / holding.qty;
+        await holding.save();
+    } else {
+        holding = new PaperPortfolio({ userId, symbol: symbol.toUpperCase(), qty, price });
+        await holding.save();
+    }
+    
+    res.json({ holding, balance: account.balance });
+});
+
+// Paper Trading: Sell
+app.post('/api/paper-portfolio/sell', async (req, res) => {
+    const { userId, symbol, qty, price } = req.body;
+    
+    let holding = await PaperPortfolio.findOne({ userId, symbol: symbol.toUpperCase() });
+    if (!holding || holding.qty < qty) {
+        return res.status(400).json({ error: "Not enough shares to sell" });
+    }
+
+    const totalRevenue = qty * price;
+    let account = await VirtualAccount.findOne({ userId });
+    account.balance += totalRevenue;
+    await account.save();
+
+    holding.qty -= qty;
+    if (holding.qty === 0) {
+        await PaperPortfolio.findByIdAndDelete(holding._id);
+        holding = null;
+    } else {
+        await holding.save();
+    }
+
+    res.json({ holding, balance: account.balance });
+});
+
+app.delete('/api/portfolio/:id', async (req, res) => {
+    await Portfolio.findByIdAndDelete(req.params.id);
+    res.send("Deleted");
+});
+
+// Screener Endpoint
+app.get('/api/screener/:type', async (req, res) => {
+    try {
+        const type = req.params.type; 
+        const result = await yahooFinance.screener({ scrIds: type, count: 15 });
+        res.json(result.quotes || []);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.get('/api/alerts/:userId', async (req, res) => {
