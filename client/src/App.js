@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download, BookOpen, Activity, DollarSign } from 'lucide-react';
+import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download, BookOpen, Activity } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Academy from './Academy';
