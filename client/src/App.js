@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download, BookOpen } from 'lucide-react';
+import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download, BookOpen, Activity, DollarSign } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Academy from './Academy';
+import Screener from './Screener';
 import StockChart from './StockChart';
 import TickerTape from './TickerTape';
 import { calculateRSI } from './utils/indicators';
@@ -21,9 +22,11 @@ function App() {
   const [news, setNews] = useState([]);
   const [watchlist, setWatchlist] = useState([]);
   const [portfolio, setPortfolio] = useState([]);
+  const [paperPortfolio, setPaperPortfolio] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [theme, setTheme] = useState('dark');
   const [briefing, setBriefing] = useState([]);
+  const [briefingPredictions, setBriefingPredictions] = useState(null);
   const [loading, setLoading] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
@@ -31,6 +34,8 @@ function App() {
   const [appError, setAppError] = useState('');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showAcademy, setShowAcademy] = useState(false);
+  const [showScreener, setShowScreener] = useState(false);
+  const [virtualBalance, setVirtualBalance] = useState(100000);
   
   const getCurrency = (sym) => sym?.endsWith('.NS') || sym?.endsWith('.BO') ? '₹' : '$';
   const currencySymbol = getCurrency(data?.meta?.symbol);
@@ -40,6 +45,18 @@ function App() {
     setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3500);
   };
 
+  const fetchVirtualBalance = async (uid) => {
+    try {
+      const res = await axios.get(`${API_URL}/api/virtual-account/${uid}`);
+      setVirtualBalance(res.data.balance);
+    } catch (e) { console.error("Error fetching balance"); }
+  };
+
+  const fetchPaperPortfolio = async (uid) => {
+    const res = await axios.get(`${API_URL}/api/paper-portfolio/${uid}`);
+    setPaperPortfolio(res.data);
+  };
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -47,16 +64,26 @@ function App() {
       if (u) {
         fetchWatchlist(u.uid);
         fetchPortfolio(u.uid);
+        fetchPaperPortfolio(u.uid);
         fetchAlerts(u.uid);
+        fetchVirtualBalance(u.uid);
       } else {
         setWatchlist([]);
         setPortfolio([]);
+        setPaperPortfolio([]);
         setAlerts([]);
       }
     });
     
     const fetchBriefing = () => {
-      axios.get(`${API_URL}/api/market-briefing`).then(res => setBriefing(res.data)).catch(() => {});
+      axios.get(`${API_URL}/api/market-briefing`).then(res => {
+        if (Array.isArray(res.data)) {
+          setBriefing(res.data);
+        } else if (res.data && res.data.news) {
+          setBriefing(res.data.news);
+          setBriefingPredictions(res.data.predictions);
+        }
+      }).catch(() => {});
     };
     
     fetchBriefing(); // Fetch immediately
@@ -152,7 +179,29 @@ function App() {
         if (qty && !isNaN(qty)) {
             await axios.post(`${API_URL}/api/portfolio`, { userId: currUser.uid, symbol: data?.meta?.symbol, qty: parseFloat(qty), price: data?.values[0].close });
             fetchPortfolio(currUser.uid);
-            showToast("Added to Portfolio");
+            showToast("Added to Real Portfolio");
+        }
+    } else if (type === 'BUY') {
+        const qtyStr = prompt(`Paper Trading: Current price of ${data?.meta?.symbol} is ${currencySymbol}${parseFloat(data?.values[0].close).toFixed(2)}.\nVirtual Cash Available: $${virtualBalance.toFixed(2)}\nEnter shares to BUY:`);
+        if (qtyStr && !isNaN(qtyStr)) {
+            const qty = parseFloat(qtyStr);
+            try {
+                const res = await axios.post(`${API_URL}/api/paper-portfolio/buy`, { userId: currUser.uid, symbol: data?.meta?.symbol, qty, price: data?.values[0].close });
+                setVirtualBalance(res.data.balance);
+                fetchPaperPortfolio(currUser.uid);
+                showToast(`Bought ${qty} paper shares of ${data?.meta?.symbol}`);
+            } catch (err) { showToast(err.response?.data?.error || "Error", "error"); }
+        }
+    } else if (type === 'SELL') {
+        const qtyStr = prompt(`Paper Trading: Current price of ${data?.meta?.symbol} is ${currencySymbol}${parseFloat(data?.values[0].close).toFixed(2)}.\nEnter shares to SELL:`);
+        if (qtyStr && !isNaN(qtyStr)) {
+            const qty = parseFloat(qtyStr);
+            try {
+                const res = await axios.post(`${API_URL}/api/paper-portfolio/sell`, { userId: currUser.uid, symbol: data?.meta?.symbol, qty, price: data?.values[0].close });
+                setVirtualBalance(res.data.balance);
+                fetchPaperPortfolio(currUser.uid);
+                showToast(`Sold ${qty} paper shares of ${data?.meta?.symbol}`);
+            } catch (err) { showToast(err.response?.data?.error || "Error", "error"); }
         }
     } else if (type === 'ALERT') {
         const targetPriceStr = prompt(`Current price of ${data?.meta?.symbol} is ${currencySymbol}${parseFloat(data?.values[0].close).toFixed(2)}.\nEnter target price to trigger alert:`);
@@ -235,7 +284,7 @@ function App() {
         <h2 
           className="gradient-text" 
           style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.4rem', cursor: 'pointer', margin: 0 }}
-          onClick={() => { setData(null); setSymbol(''); }}
+          onClick={() => { setData(null); setSymbol(''); setShowAcademy(false); setShowScreener(false); setIsMobileMenuOpen(false); }}
         >
           <img src="/favicon.svg" alt="FinIntel Logo" style={{ width: '24px', height: '24px' }} />
           FinIntel
@@ -258,7 +307,7 @@ function App() {
             <h2 
               className="gradient-text" 
               style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '1.8rem', letterSpacing: '-0.02em', cursor: 'pointer' }}
-              onClick={() => { setData(null); setSymbol(''); }}
+              onClick={() => { setData(null); setSymbol(''); setShowAcademy(false); setShowScreener(false); setIsMobileMenuOpen(false); }}
               title="Return to Dashboard"
             >
               <img src="/favicon.svg" alt="FinIntel Logo" style={{ width: '28px', height: '28px' }} />
@@ -290,9 +339,14 @@ function App() {
             </button>
           )}
 
-          <button onClick={() => { setShowAcademy(true); setIsMobileMenuOpen(false); }} className="btn-outline" style={{ width: '100%', marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
+          <button onClick={() => { setShowAcademy(true); setShowScreener(false); setIsMobileMenuOpen(false); }} className="btn-outline" style={{ width: '100%', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'var(--bg-surface-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-primary)' }}>
             <BookOpen size={18} />
             Academy for Beginners
+          </button>
+          
+          <button onClick={() => { setShowScreener(true); setShowAcademy(false); setIsMobileMenuOpen(false); setData(null); }} className="btn-outline" style={{ width: '100%', marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
+            <Activity size={18} />
+            Stock Screener
           </button>
           
           <div className="sidebar-section-title">
@@ -314,7 +368,7 @@ function App() {
 
           <div className="sidebar-section-title">
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span>Portfolio</span>
+              <span>Real Portfolio</span>
               <span className="badge neutral">{portfolio.length}</span>
             </div>
             {portfolio.length > 0 && (
@@ -328,19 +382,11 @@ function App() {
               </div>
             )}
           </div>
-          {portfolio.length > 0 && (
-            <div style={{ marginBottom: '12px', padding: '12px', background: 'var(--accent-bg)', borderRadius: 'var(--radius-md)', border: '1px solid var(--accent)' }}>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total Invested</span>
-              <span style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--accent)' }}>
-                ${portfolio.reduce((acc, p) => acc + (p.qty * p.price), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </span>
-            </div>
-          )}
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {portfolio.map((p) => (
               <div key={p._id} className="list-item" style={{ flexDirection: 'column', alignItems: 'flex-start', cursor: 'default' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                  <span style={{ fontWeight: '600', color: 'var(--accent)' }}>{p.symbol}</span>
+                  <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{p.symbol}</span>
                   <span className="font-mono">{p.qty} shrs</span>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginTop: '4px' }}>
@@ -349,7 +395,43 @@ function App() {
                 </div>
               </div>
             ))}
-            {portfolio.length === 0 && <span className="text-muted text-small">No holdings</span>}
+            {portfolio.length === 0 && <span className="text-muted text-small">No real holdings</span>}
+          </div>
+
+          <div className="sidebar-section-title" style={{ marginTop: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span>Paper Trading</span>
+              <span className="badge neutral">{paperPortfolio.length}</span>
+            </div>
+          </div>
+          <div style={{ marginBottom: '12px', padding: '12px', background: 'var(--accent-bg)', borderRadius: 'var(--radius-md)', border: '1px solid var(--accent)' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Buying Power</span>
+            <span style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--success)' }}>
+              ${virtualBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+            {paperPortfolio.length > 0 && (
+              <>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: '8px' }}>Total Invested</span>
+                <span style={{ fontSize: '1rem', fontWeight: '600', color: 'var(--accent)' }}>
+                  ${paperPortfolio.reduce((acc, p) => acc + (p.qty * p.price), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </>
+            )}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {paperPortfolio.map((p) => (
+              <div key={p._id} className="list-item" style={{ flexDirection: 'column', alignItems: 'flex-start', cursor: 'default' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                  <span style={{ fontWeight: '600', color: 'var(--accent)' }}>{p.symbol}</span>
+                  <span className="font-mono">{p.qty} shrs</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', marginTop: '4px' }}>
+                  <span className="text-muted text-small">Entry: {getCurrency(p.symbol)}{p.price ? parseFloat(p.price).toFixed(2) : '--'}</span>
+                  <button onClick={async () => { await axios.post(`${API_URL}/api/paper-portfolio/sell`, { userId: user.uid, symbol: p.symbol, qty: p.qty, price: p.price }); fetchPaperPortfolio(user.uid); fetchVirtualBalance(user.uid); }} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.8rem', padding: 0 }}>Sell All</button>
+                </div>
+              </div>
+            ))}
+            {paperPortfolio.length === 0 && <span className="text-muted text-small">No paper trades</span>}
           </div>
 
           <div className="sidebar-section-title">
@@ -376,6 +458,8 @@ function App() {
         <main className="main-content">
           {showAcademy ? (
             <Academy onClose={() => setShowAcademy(false)} />
+          ) : showScreener ? (
+            <Screener onClose={() => setShowScreener(false)} onSelectSymbol={(sym) => { setShowScreener(false); fetchStockData(sym); }} />
           ) : (
             <>
               <div style={{ position: 'relative', display: 'flex', gap: '12px', marginBottom: '32px', maxWidth: '600px' }}>
@@ -418,6 +502,30 @@ function App() {
                   <h3 style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                     Morning Market Briefing
                   </h3>
+                  {briefingPredictions && (briefingPredictions.higher?.length > 0 || briefingPredictions.lower?.length > 0) && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginBottom: '24px' }}>
+                      <div style={{ background: 'var(--success-bg)', border: '1px solid var(--success)', padding: '16px', borderRadius: 'var(--radius-md)' }}>
+                        <h4 style={{ color: 'var(--success)', margin: '0 0 12px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <TrendingUp size={18} /> Predicted Higher
+                        </h4>
+                        {briefingPredictions.higher?.map((p, i) => (
+                          <div key={i} style={{ marginBottom: '8px', fontSize: '0.9rem' }}>
+                            <strong>{p.symbol}</strong>: <span className="text-muted">{p.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ background: 'var(--danger-bg)', border: '1px solid var(--danger)', padding: '16px', borderRadius: 'var(--radius-md)' }}>
+                        <h4 style={{ color: 'var(--danger)', margin: '0 0 12px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <TrendingUp size={18} style={{ transform: 'rotate(180deg)' }} /> Predicted Lower
+                        </h4>
+                        {briefingPredictions.lower?.map((p, i) => (
+                          <div key={i} style={{ marginBottom: '8px', fontSize: '0.9rem' }}>
+                            <strong>{p.symbol}</strong>: <span className="text-muted">{p.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {briefing.length > 0 && (
                     <div className="hero-grid">
                       {briefing.slice(0, 2).map((n, i) => (
@@ -485,9 +593,17 @@ function App() {
                       <button onClick={() => handleProtectedAction('ALERT')} className="btn-outline">
                         <Bell size={16} /> Alert
                       </button>
-                      <button onClick={() => handleProtectedAction('PORTFOLIO')} className="btn-primary">
-                        <Plus size={16} /> Portfolio
+                      <button onClick={() => handleProtectedAction('PORTFOLIO')} className="btn-primary" style={{ background: 'var(--text-primary)', color: 'var(--bg-primary)' }}>
+                        <Plus size={16} /> Real Portfolio
                       </button>
+                      <button onClick={() => handleProtectedAction('BUY')} className="btn-primary" style={{ background: 'var(--success)', borderColor: 'var(--success)' }}>
+                         Paper Buy
+                      </button>
+                      {paperPortfolio.some(p => p.symbol === data.meta.symbol) && (
+                          <button onClick={() => handleProtectedAction('SELL')} className="btn-outline" style={{ color: 'var(--danger)', borderColor: 'var(--danger)' }}>
+                             Paper Sell
+                          </button>
+                      )}
                     </div>
                   </div>
 
