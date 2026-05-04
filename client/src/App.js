@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Routes, Route, useNavigate, Navigate } from 'react-router-dom';
 import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download, BookOpen, Activity } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -15,6 +16,7 @@ import { onAuthStateChanged } from "firebase/auth";
 const API_URL = process.env.NODE_ENV === 'production' ? 'https://finintel-qj46.onrender.com' : 'http://localhost:5000';
 
 function App() {
+  const navigate = useNavigate();
   const [user, setUser] = useState(null);
   const [symbol, setSymbol] = useState('');
   const [suggestions, setSuggestions] = useState([]);
@@ -33,12 +35,23 @@ function App() {
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [appError, setAppError] = useState('');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [showAcademy, setShowAcademy] = useState(false);
-  const [showScreener, setShowScreener] = useState(false);
   const [virtualBalance, setVirtualBalance] = useState(100000);
+  const searchInputRef = useRef(null);
   
   const getCurrency = (sym) => sym?.endsWith('.NS') || sym?.endsWith('.BO') ? '₹' : '$';
   const currencySymbol = getCurrency(data?.meta?.symbol);
+
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
@@ -238,40 +251,71 @@ function App() {
   };
   const verdict = rsiScore ? getVerdict(rsiScore) : { label: "HOLD", color: "var(--text-tertiary)" };
 
-  const exportPortfolio = (type) => {
+  const exportPortfolio = async (type) => {
     if (portfolio.length === 0) {
       showToast('Portfolio is empty', 'error');
       return;
     }
-    const headers = ['Symbol', 'Quantity', 'Entry Price', 'Total Value'];
-    const rows = portfolio.map(p => [
-      p.symbol,
-      p.qty.toString(),
-      `${getCurrency(p.symbol)}${parseFloat(p.price || 0).toFixed(2)}`,
-      `${getCurrency(p.symbol)}${(p.qty * (p.price || 0)).toFixed(2)}`
-    ]);
+    
+    showToast('Preparing download...', 'success');
 
-    if (type === 'csv') {
-      const csvContent = "data:text/csv;charset=utf-8," 
-        + [headers, ...rows].map(e => e.join(",")).join("\n");
-      const encodedUri = encodeURI(csvContent);
-      const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", "FinIntel_Portfolio.csv");
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      showToast('Portfolio downloaded as CSV');
-    } else if (type === 'pdf') {
-      const doc = new jsPDF();
-      doc.text("FinIntel - My Portfolio", 14, 15);
-      autoTable(doc, {
-        head: [headers],
-        body: rows,
-        startY: 20,
+    try {
+      const currentPrices = await Promise.all(
+        portfolio.map(async (p) => {
+          try {
+            const res = await axios.get(`${API_URL}/api/stock/${p.symbol}`);
+            if (res.data && res.data.values && res.data.values.length > 0) {
+              return parseFloat(res.data.values[0].close);
+            }
+          } catch (e) {
+            console.error("Failed to fetch price for", p.symbol);
+          }
+          return parseFloat(p.price || 0); 
+        })
+      );
+
+      const headers = ['Symbol', 'Quantity', 'Purchase Price', 'Current Price', 'Total Cost', 'Current Value', 'P/L'];
+      const rows = portfolio.map((p, index) => {
+        const currPrice = currentPrices[index];
+        const totalCost = p.qty * parseFloat(p.price || 0);
+        const currValue = p.qty * currPrice;
+        const pl = currValue - totalCost;
+        
+        return [
+          p.symbol,
+          p.qty.toString(),
+          `${getCurrency(p.symbol)}${parseFloat(p.price || 0).toFixed(2)}`,
+          `${getCurrency(p.symbol)}${currPrice.toFixed(2)}`,
+          `${getCurrency(p.symbol)}${totalCost.toFixed(2)}`,
+          `${getCurrency(p.symbol)}${currValue.toFixed(2)}`,
+          `${getCurrency(p.symbol)}${pl.toFixed(2)}`
+        ];
       });
-      doc.save("FinIntel_Portfolio.pdf");
-      showToast('Portfolio downloaded as PDF');
+
+      if (type === 'csv') {
+        const csvContent = "data:text/csv;charset=utf-8," 
+          + [headers, ...rows].map(e => e.join(",")).join("\n");
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", "FinIntel_Portfolio.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showToast('Portfolio downloaded as CSV');
+      } else if (type === 'pdf') {
+        const doc = new jsPDF();
+        doc.text("FinIntel - My Portfolio", 14, 15);
+        autoTable(doc, {
+          head: [headers],
+          body: rows,
+          startY: 20,
+        });
+        doc.save("FinIntel_Portfolio.pdf");
+        showToast('Portfolio downloaded as PDF');
+      }
+    } catch (e) {
+      showToast('Error generating portfolio file', 'error');
     }
   };
 
@@ -284,7 +328,7 @@ function App() {
         <h2 
           className="gradient-text" 
           style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.4rem', cursor: 'pointer', margin: 0 }}
-          onClick={() => { setData(null); setSymbol(''); setShowAcademy(false); setShowScreener(false); setIsMobileMenuOpen(false); }}
+          onClick={() => { setData(null); setSymbol(''); navigate('/'); setIsMobileMenuOpen(false); }}
         >
           <img src="/favicon.svg" alt="FinIntel Logo" style={{ width: '24px', height: '24px' }} />
           FinIntel
@@ -307,7 +351,7 @@ function App() {
             <h2 
               className="gradient-text" 
               style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '1.8rem', letterSpacing: '-0.02em', cursor: 'pointer' }}
-              onClick={() => { setData(null); setSymbol(''); setShowAcademy(false); setShowScreener(false); setIsMobileMenuOpen(false); }}
+              onClick={() => { setData(null); setSymbol(''); navigate('/'); setIsMobileMenuOpen(false); }}
               title="Return to Dashboard"
             >
               <img src="/favicon.svg" alt="FinIntel Logo" style={{ width: '28px', height: '28px' }} />
@@ -339,12 +383,12 @@ function App() {
             </button>
           )}
 
-          <button onClick={() => { setShowAcademy(true); setShowScreener(false); setIsMobileMenuOpen(false); }} className="btn-outline" style={{ width: '100%', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'var(--bg-surface-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-primary)' }}>
+          <button onClick={() => { navigate('/academy'); setIsMobileMenuOpen(false); }} className="btn-outline" style={{ width: '100%', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'var(--bg-surface-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border-primary)' }}>
             <BookOpen size={18} />
             Academy for Beginners
           </button>
           
-          <button onClick={() => { setShowScreener(true); setShowAcademy(false); setIsMobileMenuOpen(false); setData(null); }} className="btn-outline" style={{ width: '100%', marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
+          <button onClick={() => { navigate('/screener'); setIsMobileMenuOpen(false); setData(null); }} className="btn-outline" style={{ width: '100%', marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
             <Activity size={18} />
             Stock Screener
           </button>
@@ -456,24 +500,30 @@ function App() {
         </aside>
 
         <main className="main-content">
-          {showAcademy ? (
-            <Academy onClose={() => setShowAcademy(false)} />
-          ) : showScreener ? (
-            <Screener onClose={() => setShowScreener(false)} onSelectSymbol={(sym) => { setShowScreener(false); fetchStockData(sym); }} />
-          ) : (
-            <>
-              <div style={{ position: 'relative', display: 'flex', gap: '12px', marginBottom: '32px', maxWidth: '600px' }}>
-            <div style={{ position: 'relative', flex: 1 }}>
+          <Routes>
+            <Route path="/academy" element={<Academy onClose={() => navigate('/')} />} />
+            <Route path="/screener" element={<Screener onClose={() => navigate('/')} onSelectSymbol={(sym) => { fetchStockData(sym); navigate('/'); }} />} />
+            <Route path="/" element={
+              <>
+                <div style={{ position: 'relative', display: 'flex', gap: '8px', marginBottom: '32px', maxWidth: '600px' }}>
+            <div style={{ position: 'relative', flex: '1 1 70%' }}>
               <Search size={18} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
               <input 
                 className="input-field" 
-                placeholder="Search symbol (e.g., AAPL, TSLA)..." 
+                ref={searchInputRef}
+                placeholder="Search (e.g., AAPL)  Ctrl+K" 
                 value={symbol} 
                 onChange={(e) => { setSymbol(e.target.value.toUpperCase()); setData(null); setAppError(''); }} 
                 onKeyPress={(e) => e.key === 'Enter' && fetchStockData()} 
+                style={{ paddingRight: '40px' }}
               />
+              {symbol && (
+                <button onClick={() => { setSymbol(''); setData(null); }} style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4px' }}>
+                  <X size={16} />
+                </button>
+              )}
             </div>
-            <button className="btn-primary" onClick={() => fetchStockData()} disabled={loading}>
+            <button className="btn-primary" onClick={() => fetchStockData()} disabled={loading} style={{ flex: '1 1 30%', width: 'auto', minWidth: '100px', padding: '10px 16px' }}>
               {loading ? <div className="mini-spinner" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: '#fff' }}></div> : "Analyze"}
             </button>
             <AnimatePresence>
@@ -523,6 +573,9 @@ function App() {
                             <strong>{p.symbol}</strong>: <span className="text-muted">{p.reason}</span>
                           </div>
                         ))}
+                      </div>
+                      <div style={{ gridColumn: '1 / -1', fontSize: '0.75rem', color: 'var(--text-tertiary)', textAlign: 'center', marginTop: '8px', fontStyle: 'italic', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        <AlertCircle size={14} /> Disclaimer: These AI-generated predictions are for educational purposes only and do not constitute financial advice.
                       </div>
                     </div>
                   )}
@@ -710,12 +763,11 @@ function App() {
 
           <footer style={{ marginTop: 'auto', paddingTop: '32px', borderTop: '1px solid var(--border-subtle)', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.85rem' }}>
             <p style={{ margin: '0 0 8px 0' }}>&copy; {new Date().getFullYear()} FinIntel. All Rights Reserved.</p>
-            <p style={{ margin: 0 }}>
-              Designed & Developed by <span style={{ color: 'var(--accent)', fontWeight: '600', letterSpacing: '0.5px' }}>Anmol</span>
-            </p>
           </footer>
-            </>
-          )}
+              </>
+            } />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
         </main>
       </div>
 
