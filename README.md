@@ -1,5 +1,7 @@
 # FinIntel Dashboard 📈
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-finintel.pages.dev-blue?style=for-the-badge)](https://finintel.pages.dev/)
+
 FinIntel is a professional, production-grade financial dashboard and portfolio management platform built with the MERN stack. It empowers users with real-time stock data, paper trading capabilities, AI-driven market insights, and comprehensive portfolio tracking.
 
 ## 🚀 Features
