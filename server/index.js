@@ -8,7 +8,8 @@ const cron = require('node-cron');
 const Groq = require("groq-sdk");
 const NodeCache = require('node-cache');
 const YahooFinance = require('yahoo-finance2').default;
-const yahooFinance = new YahooFinance();
+const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
+try { yahooFinance._setOpts({ validation: { logErrors: false } }); } catch (e) {}
 
 // --- Models ---
 const Watchlist = require('./models/WatchList');
@@ -104,7 +105,7 @@ app.get('/api/stock/:symbol', async (req, res) => {
         const oneYearAgo = new Date();
         oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
         const queryOptions = { period1: oneYearAgo.toISOString().split('T')[0], interval: '1d' };
-        const result = await yahooFinance.chart(sym, queryOptions);
+        const result = await yahooFinance.chart(sym, queryOptions, { validateResult: false });
         if (!result || !result.quotes || result.quotes.length === 0) throw new Error("No data found on Yahoo Finance");
         return {
             meta: { symbol: sym },
@@ -147,24 +148,60 @@ app.get('/api/stock/:symbol', async (req, res) => {
     }
 });
 
-// Smart Search using Yahoo Finance (Supports Global Stocks including NSE/BSE)
+// Smart Search using Yahoo Finance (Supports Global Stocks including NSE/BSE) with Finnhub Fallback
 app.get('/api/search/:query', async (req, res) => {
     const { query } = req.params;
-    const cacheKey = `search_${query.toLowerCase()}`;
+    if (!query || !query.trim()) return res.json([]);
+    
+    const cleanQuery = query.trim();
+    const cacheKey = `search_${cleanQuery.toLowerCase()}`;
     const cached = myCache.get(cacheKey);
     if (cached) return res.json(cached);
 
     try {
-        const ySearch = await yahooFinance.search(query);
-        const formatted = ySearch.quotes
-            .filter(q => q.isYahooFinance && (q.quoteType === 'EQUITY' || q.quoteType === 'ETF'))
-            .slice(0, 6)
-            .map(s => ({
-                symbol: s.symbol,
-                instrument_name: `${s.shortname || s.longname || s.symbol} (${s.exchange})`
-            }));
+        let formatted = [];
+        try {
+            const ySearch = await yahooFinance.search(cleanQuery, {}, { validateResult: false });
+            if (ySearch && ySearch.quotes) {
+                formatted = ySearch.quotes
+                    .filter(q => q && q.symbol && (
+                        q.quoteType === 'EQUITY' || 
+                        q.quoteType === 'ETF' || 
+                        q.quoteType === 'MUTUALFUND' || 
+                        q.quoteType === 'INDEX' || 
+                        !q.quoteType
+                    ))
+                    .slice(0, 8)
+                    .map(s => ({
+                        symbol: s.symbol,
+                        instrument_name: `${s.shortname || s.longname || s.symbol}${s.exchange ? ` (${s.exchange})` : ''}`
+                    }));
+            }
+        } catch (yfError) {
+            console.error("Yahoo Search Error:", yfError.message);
+        }
+
+        // If Yahoo returned no results or failed, fallback to Finnhub
+        if (formatted.length === 0 && process.env.FINNHUB_API_KEY) {
+            try {
+                const finnhubRes = await axios.get(`${FINNHUB_URL}/search?q=${encodeURIComponent(cleanQuery)}&token=${process.env.FINNHUB_API_KEY}`);
+                if (finnhubRes.data && finnhubRes.data.result) {
+                    formatted = finnhubRes.data.result
+                        .filter(item => item && item.symbol)
+                        .slice(0, 8)
+                        .map(item => ({
+                            symbol: item.symbol,
+                            instrument_name: `${item.description || item.symbol} (${item.type || 'Stock'})`
+                        }));
+                }
+            } catch (fhErr) {
+                console.error("Finnhub search fallback error:", fhErr.message);
+            }
+        }
         
-        myCache.set(cacheKey, formatted, 3600);
+        if (formatted.length > 0) {
+            myCache.set(cacheKey, formatted, 3600);
+        }
         return res.json(formatted);
     } catch (error) {
         console.error("Search Error:", error.message);
@@ -258,8 +295,8 @@ app.get('/api/market-briefing', async (req, res) => {
 app.get('/api/news/:symbol', async (req, res) => {
     try {
         let cleanSymbol = req.params.symbol.split(':')[0].replace('.NS', '').replace('.BO', '');
-        const ySearch = await yahooFinance.search(cleanSymbol);
-        const articles = ySearch.news.slice(0, 5).map(item => ({
+        const ySearch = await yahooFinance.search(cleanSymbol, {}, { validateResult: false });
+        const articles = (ySearch.news || []).slice(0, 5).map(item => ({
             title: item.title,
             url: item.link,
             urlToImage: item.thumbnail?.resolutions?.[0]?.url || null,
@@ -284,7 +321,7 @@ app.get('/api/fundamentals/:symbol', async (req, res) => {
     try {
         let data = {};
         if (isIndianStock) {
-            const summary = await yahooFinance.quoteSummary(rawSymbol, { modules: ['summaryDetail', 'defaultKeyStatistics'] });
+            const summary = await yahooFinance.quoteSummary(rawSymbol, { modules: ['summaryDetail', 'defaultKeyStatistics'] }, { validateResult: false });
             data = {
                 profile: { 
                     marketCapitalization: summary.summaryDetail?.marketCap ? summary.summaryDetail.marketCap / 1000000 : null 
@@ -429,7 +466,7 @@ app.delete('/api/portfolio/:id', async (req, res) => {
 app.get('/api/screener/:type', async (req, res) => {
     try {
         const type = req.params.type; 
-        const result = await yahooFinance.screener({ scrIds: type, count: 15 });
+        const result = await yahooFinance.screener({ scrIds: type, count: 15 }, undefined, { validateResult: false });
         res.json(result.quotes || []);
     } catch (e) {
         res.status(500).json({ error: e.message });

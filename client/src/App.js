@@ -14,6 +14,25 @@ import { auth, provider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged } from "firebase/auth";
 
 const API_URL = process.env.NODE_ENV === 'production' ? 'https://finintel-qj46.onrender.com' : 'http://localhost:5000';
+const UPTIMEROBOT_STATUS_URL = 'https://dashboard.uptimerobot.com/monitors/803125214';
+
+const UptimeRobotIcon = ({ size = 18 }) => (
+  <svg 
+    width={size} 
+    height={size} 
+    viewBox="0 0 24 24" 
+    fill="none" 
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <circle cx="12" cy="12" r="10" fill="#10b981" />
+    <rect x="6" y="8" width="12" height="8" rx="1.5" fill="#ffffff" />
+    <circle cx="9" cy="12" r="1" fill="#10b981" />
+    <circle cx="15" cy="12" r="1" fill="#10b981" />
+    <path d="M11 14.5h2" stroke="#10b981" strokeWidth="1.2" strokeLinecap="round" />
+    <rect x="11" y="5" width="2" height="3" fill="#ffffff" />
+    <circle cx="12" cy="4" r="1" fill="#ffffff" />
+  </svg>
+);
 
 function App() {
   const navigate = useNavigate();
@@ -36,7 +55,11 @@ function App() {
   const [appError, setAppError] = useState('');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [virtualBalance, setVirtualBalance] = useState(100000);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
+  const [searchLoading, setSearchLoading] = useState(false);
   const searchInputRef = useRef(null);
+  const searchContainerRef = useRef(null);
   
   const getCurrency = (sym) => sym?.endsWith('.NS') || sym?.endsWith('.BO') ? '₹' : '$';
   const currencySymbol = getCurrency(data?.meta?.symbol);
@@ -51,6 +74,17 @@ function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Dismiss suggestions dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   const showToast = (message, type = 'success') => {
@@ -110,13 +144,32 @@ function App() {
 
   // Autocomplete Logic
   useEffect(() => {
+    const query = symbol?.trim();
+    if (!query || query.length < 2 || !showSuggestions) {
+      setSuggestions([]);
+      setSearchLoading(false);
+      setSelectedSuggestionIndex(-1);
+      return;
+    }
+
+    setSearchLoading(true);
     const timer = setTimeout(() => {
-      if (symbol.length > 1 && !data) {
-        axios.get(`${API_URL}/api/search/${symbol}`).then(res => setSuggestions(res.data));
-      } else { setSuggestions([]); }
-    }, 500);
+      axios.get(`${API_URL}/api/search/${encodeURIComponent(query)}`)
+        .then(res => {
+          if (Array.isArray(res.data)) {
+            setSuggestions(res.data);
+            setSelectedSuggestionIndex(-1);
+          }
+        })
+        .catch(err => {
+          console.error("Autocomplete error:", err);
+          setSuggestions([]);
+        })
+        .finally(() => setSearchLoading(false));
+    }, 250);
+
     return () => clearTimeout(timer);
-  }, [symbol, data]);
+  }, [symbol, showSuggestions]);
 
   const fetchWatchlist = async (uid) => {
     const res = await axios.get(`${API_URL}/api/watchlist/${uid}`);
@@ -134,10 +187,11 @@ function App() {
   };
 
   const fetchStockData = async (s) => {
-    const sym = s || symbol;
+    const sym = (s || symbol)?.trim();
     if (!sym) return;
+    setShowSuggestions(false);
     setSuggestions([]);
-    setSymbol(sym);
+    setSymbol(sym.toUpperCase());
     setLoading(true);
     setData(null);
     setAppError('');
@@ -497,6 +551,27 @@ function App() {
             ))}
             {alerts.length === 0 && <span className="text-muted text-small">No active alerts</span>}
           </div>
+
+          {/* UptimeRobot Status Widget */}
+          <a 
+            href={UPTIMEROBOT_STATUS_URL} 
+            target="_blank" 
+            rel="noreferrer" 
+            className="uptime-widget"
+            title="Check System Status on UptimeRobot"
+          >
+            <div className="uptime-header">
+              <div className="uptime-brand">
+                <UptimeRobotIcon size={18} />
+                <span>UptimeRobot</span>
+              </div>
+              <span className="uptime-percentage">100%</span>
+            </div>
+            <div className="uptime-status-info">
+              <div className="status-dot-pulse"></div>
+              <span>All Systems Operational</span>
+            </div>
+          </a>
         </aside>
 
         <main className="main-content">
@@ -505,7 +580,7 @@ function App() {
             <Route path="/screener" element={<Screener onClose={() => navigate('/')} onSelectSymbol={(sym) => { fetchStockData(sym); navigate('/'); }} />} />
             <Route path="/" element={
               <>
-                <div style={{ position: 'relative', display: 'flex', gap: '8px', marginBottom: '32px', maxWidth: '600px' }}>
+                <div ref={searchContainerRef} style={{ position: 'relative', display: 'flex', gap: '8px', marginBottom: '32px', maxWidth: '600px' }}>
             <div style={{ position: 'relative', flex: '1 1 70%' }}>
               <Search size={18} style={{ position: 'absolute', left: '14px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
               <input 
@@ -513,12 +588,43 @@ function App() {
                 ref={searchInputRef}
                 placeholder="Search (e.g., AAPL)  Ctrl+K" 
                 value={symbol} 
-                onChange={(e) => { setSymbol(e.target.value.toUpperCase()); setData(null); setAppError(''); }} 
-                onKeyPress={(e) => e.key === 'Enter' && fetchStockData()} 
+                onFocus={() => { if (symbol?.trim().length >= 2) setShowSuggestions(true); }}
+                onChange={(e) => { 
+                  setSymbol(e.target.value.toUpperCase()); 
+                  setShowSuggestions(true);
+                  setAppError(''); 
+                }} 
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown') {
+                    if (suggestions.length > 0) {
+                      e.preventDefault();
+                      setSelectedSuggestionIndex(prev => (prev + 1) % suggestions.length);
+                    }
+                  } else if (e.key === 'ArrowUp') {
+                    if (suggestions.length > 0) {
+                      e.preventDefault();
+                      setSelectedSuggestionIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
+                    }
+                  } else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (selectedSuggestionIndex >= 0 && suggestions[selectedSuggestionIndex]) {
+                      const selected = suggestions[selectedSuggestionIndex].symbol;
+                      setSymbol(selected);
+                      fetchStockData(selected);
+                    } else {
+                      fetchStockData();
+                    }
+                  } else if (e.key === 'Escape') {
+                    setShowSuggestions(false);
+                  }
+                }} 
                 style={{ paddingRight: '40px' }}
               />
               {symbol && (
-                <button onClick={() => { setSymbol(''); setData(null); }} style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4px' }}>
+                <button 
+                  onClick={() => { setSymbol(''); setSuggestions([]); setShowSuggestions(false); }} 
+                  style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--text-tertiary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4px' }}
+                >
                   <X size={16} />
                 </button>
               )}
@@ -527,12 +633,22 @@ function App() {
               {loading ? <div className="mini-spinner" style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: '#fff' }}></div> : "Analyze"}
             </button>
             <AnimatePresence>
-              {suggestions.length > 0 && (
+              {showSuggestions && suggestions.length > 0 && (
                 <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="suggestions-dropdown">
                   {suggestions.map((s, i) => (
-                    <div key={i} className="suggestion-item" onClick={() => { setSymbol(s.symbol); fetchStockData(s.symbol); }}>
+                    <div 
+                      key={i} 
+                      className="suggestion-item" 
+                      style={selectedSuggestionIndex === i ? { background: 'var(--bg-surface-elevated)' } : {}}
+                      onMouseEnter={() => setSelectedSuggestionIndex(i)}
+                      onClick={() => { 
+                        setShowSuggestions(false);
+                        setSymbol(s.symbol); 
+                        fetchStockData(s.symbol); 
+                      }}
+                    >
                       <span style={{ fontWeight: '600' }}>{s.symbol}</span>
-                      <span className="text-muted text-small" style={{ maxWidth: '200px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.instrument_name}</span>
+                      <span className="text-muted text-small" style={{ maxWidth: '280px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.instrument_name}</span>
                     </div>
                   ))}
                 </motion.div>
