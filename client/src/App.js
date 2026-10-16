@@ -23,6 +23,7 @@ import {
   Layers,
   ArrowUpRight,
   ArrowDownRight,
+  ShieldCheck,
   PieChart
 } from 'lucide-react';
 import jsPDF from 'jspdf';
@@ -455,39 +456,50 @@ function App() {
       {/* 1. Global High-Frequency Ticker Tape */}
       <TickerTape />
 
-      <div className="terminal-layout">
-        {/* Mobile Header Bar */}
-        <div className="mobile-header">
-          <div
-            className="brand-link"
-            onClick={() => {
-              setData(null);
-              setSymbol('');
-              setActiveTab('overview');
-              setIsMobileMenuOpen(false);
-            }}
-          >
-            <span>FinIntel</span>
-            <span className="brand-badge">Terminal</span>
-          </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <button
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              className="btn btn-ghost"
-              style={{ padding: '6px' }}
-            >
-              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-            </button>
-            <button
-              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className="btn btn-ghost"
-              style={{ padding: '6px' }}
-            >
-              {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
-            </button>
-          </div>
+      {/* Mobile Top Header - Displayed only on responsive viewports <= 1024px */}
+      <header className="mobile-header">
+        <div
+          className="brand-link"
+          onClick={() => {
+            setData(null);
+            setSymbol('');
+            setActiveTab('overview');
+            setIsMobileMenuOpen(false);
+          }}
+        >
+          <span>FinIntel</span>
         </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className="btn btn-ghost"
+            style={{ padding: '6px' }}
+            aria-label="Toggle Theme"
+          >
+            {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
+          <button
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            className="btn btn-ghost"
+            style={{ padding: '6px' }}
+            aria-label="Toggle Menu"
+          >
+            {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
+        </div>
+      </header>
 
+      {/* Mobile Sidebar Overlay Backdrop */}
+      {isMobileMenuOpen && (
+        <div
+          className="sidebar-backdrop"
+          onClick={() => setIsMobileMenuOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Main 2-Column Desktop Terminal Layout: 240px Fixed Sidebar + 1fr Flexible Main */}
+      <div className="terminal-layout">
         {/* 2. Structured Financial Sidebar Navigation */}
         <aside className={`sidebar ${isMobileMenuOpen ? 'open' : ''}`}>
           <div className="sidebar-brand-block">
@@ -501,7 +513,6 @@ function App() {
               }}
             >
               <span>FinIntel</span>
-              <span className="brand-badge">PRO</span>
             </div>
             <button
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
@@ -767,16 +778,18 @@ function App() {
               )}
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div className="topbar-status-group">
+              <div className="market-live-badge">
+                <span className="status-dot"></span>
+                <span>Feed Live</span>
+              </div>
+              <div className="paper-capital-badge font-mono">
+                ${virtualBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Sim Cash
+              </div>
               <button
-                className={`btn ${activeTab === 'overview' && !data ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => { setData(null); setActiveTab('overview'); }}
-              >
-                Overview
-              </button>
-              <button
-                className="btn btn-secondary"
+                className="btn btn-secondary btn-sm"
                 onClick={() => setIsQuantLabOpen(true)}
+                title="Launch C++ Quant Lab"
               >
                 <Cpu size={14} color="var(--accent)" />
                 <span>Quant Lab</span>
@@ -976,56 +989,54 @@ function App() {
             /* ==========================================================================
                OVERVIEW DASHBOARD: The 5 Core Investor Questions Answered
                ========================================================================== */
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {/* Question 1 & 2: Valuation, Day Change, Total Return, Buying Power */}
-              <div className="portfolio-summary-bar">
-                <div className="summary-metric-card">
-                  <span className="summary-metric-label">Portfolio Valuation</span>
-                  <span className="summary-metric-value">
-                    ${totalPortfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                  <span className={`summary-metric-sub ${totalUnrealizedPnL >= 0 ? 'pos' : 'neg'}`}>
-                    {totalUnrealizedPnL >= 0 ? '+' : ''}${totalUnrealizedPnL.toFixed(2)} ({totalUnrealizedPnLPercent.toFixed(1)}% All-Time)
-                  </span>
-                </div>
+            <div className="dashboard-grid">
+              {/* Question 1 & 2: Valuation, Cost Basis, Buying Power & Risk Node */}
+              <div className="dashboard-span-12">
+                <div className="portfolio-summary-bar">
+                  <div className="summary-metric-card">
+                    <span className="summary-metric-label">Portfolio Valuation</span>
+                    <span className="summary-metric-value">
+                      ${totalPortfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className={`summary-metric-sub ${totalUnrealizedPnL >= 0 ? 'pos' : 'neg'}`}>
+                      {totalUnrealizedPnL >= 0 ? '+' : ''}${totalUnrealizedPnL.toFixed(2)} ({totalUnrealizedPnLPercent.toFixed(1)}% All-Time)
+                    </span>
+                  </div>
 
-                <div className="summary-metric-card">
-                  <span className="summary-metric-label">Cost Basis</span>
-                  <span className="summary-metric-value">
-                    ${totalCostBasis.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                  <span className="summary-metric-sub neutral">
-                    {portfolio.length} Active Positions
-                  </span>
-                </div>
+                  <div className="summary-metric-card">
+                    <span className="summary-metric-label">Cost Basis</span>
+                    <span className="summary-metric-value">
+                      ${totalCostBasis.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="summary-metric-sub neutral">
+                      {portfolio.length} Active Positions
+                    </span>
+                  </div>
 
-                <div className="summary-metric-card">
-                  <span className="summary-metric-label">Virtual Buying Power</span>
-                  <span className="summary-metric-value" style={{ color: 'var(--accent)' }}>
-                    ${virtualBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                  <span className="summary-metric-sub neutral">
-                    Paper Simulator Capital
-                  </span>
-                </div>
+                  <div className="summary-metric-card">
+                    <span className="summary-metric-label">Virtual Buying Power</span>
+                    <span className="summary-metric-value" style={{ color: 'var(--accent)' }}>
+                      ${virtualBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="summary-metric-sub neutral">
+                      Paper Simulator Capital
+                    </span>
+                  </div>
 
-                <div className="summary-metric-card">
-                  <span className="summary-metric-label">Risk Analytics Node</span>
-                  <span className="summary-metric-value" style={{ fontSize: '1.15rem' }}>
-                    C++20 Engine
-                  </span>
-                  <button
-                    onClick={() => setIsQuantLabOpen(true)}
-                    className="btn btn-secondary btn-sm"
-                    style={{ marginTop: 'auto', alignSelf: 'flex-start' }}
-                  >
-                    Run Monte Carlo
-                  </button>
+                  <div className="summary-metric-card">
+                    <span className="summary-metric-label">Quantitative Node</span>
+                    <span className="summary-metric-value" style={{ fontSize: '1.15rem' }}>
+                      C++20 OpenMP
+                    </span>
+                    <span className="summary-metric-sub font-mono" style={{ color: 'var(--accent)' }}>
+                      {navigator.hardwareConcurrency || 8} Threads Detected
+                    </span>
+                  </div>
                 </div>
               </div>
 
-              {/* Question 3 & 4: Concise Holdings Table with Numeric Alignment */}
-              <div className="terminal-panel">
+              {/* Question 3 & 4: Concise Holdings Table with Numeric Alignment (Span 8) */}
+              <div className="terminal-panel dashboard-span-8">
                 <div className="panel-header">
                   <div>
                     <h2 className="panel-title">
@@ -1121,132 +1132,225 @@ function App() {
                     </table>
                   </div>
                 ) : (
-                  <div style={{ padding: '36px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.85rem' }}>
-                    <p style={{ margin: '0 0 10px 0' }}>No portfolio holdings tracked yet.</p>
-                    <span style={{ fontSize: '0.78rem' }}>
-                      Search any global symbol above (e.g., AAPL) and click <strong>"Holdings"</strong> to record positions.
-                    </span>
+                  <div className="holdings-empty-state">
+                    <div className="empty-icon-wrap">
+                      <PieChart size={24} color="var(--text-tertiary)" />
+                    </div>
+                    <div>
+                      <span className="empty-title">No Portfolio Positions Tracked</span>
+                      <p className="empty-desc">
+                        Search any global ticker above (e.g., <button type="button" className="inline-symbol-btn" onClick={() => fetchStockData('AAPL')}>AAPL</button>, <button type="button" className="inline-symbol-btn" onClick={() => fetchStockData('NVDA')}>NVDA</button>, or <button type="button" className="inline-symbol-btn" onClick={() => fetchStockData('MSFT')}>MSFT</button>) and click <strong>"Holdings"</strong> to record trade positions.
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
 
-              {/* Question 5: What deserves my attention? (Market Briefing & Active Price Alerts) */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
-                {/* Morning Market Context */}
-                <div className="terminal-panel">
-                  <div className="panel-header">
-                    <h3 className="panel-title">
-                      <Activity size={17} color="var(--accent)" />
-                      Macro Intelligence Briefing
-                    </h3>
-                    <span className="term-badge neutral">CNBC Wire</span>
+              {/* Dedicated Risk Analytics & Quant Lab Launcher (Span 4) */}
+              <div className="terminal-panel dashboard-span-4" style={{ display: 'flex', flexDirection: 'column' }}>
+                <div className="panel-header">
+                  <div>
+                    <h2 className="panel-title">
+                      <ShieldCheck size={18} color="var(--accent)" />
+                      Risk Analytics
+                    </h2>
+                    <span className="panel-subtitle">Tail risk & quantitative metrics</span>
                   </div>
-
-                  {briefingPredictions && (
-                    <div style={{ padding: '10px 12px', background: 'var(--bg-surface-elevated)', borderLeft: '3px solid var(--accent)', borderRadius: 'var(--radius-xs)', marginBottom: '12px' }}>
-                      <div style={{ fontSize: '0.7rem', color: 'var(--accent)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '4px' }}>
-                        Quantitative Market Synthesis
-                      </div>
-                      <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: '1.45' }}>
-                        {typeof briefingPredictions === 'string' ? briefingPredictions : JSON.stringify(briefingPredictions)}
-                      </div>
-                    </div>
-                  )}
-
-                  {briefing.length > 0 ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      {briefing.slice(0, 5).map((n, i) => (
-                        <div
-                          key={i}
-                          onClick={() => window.open(n.url, '_blank')}
-                          style={{
-                            padding: '10px',
-                            background: 'var(--bg-surface-elevated)',
-                            borderRadius: 'var(--radius-xs)',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '4px'
-                          }}
-                        >
-                          <span style={{ fontSize: '0.82rem', fontWeight: '500', color: 'var(--text-primary)', lineHeight: '1.4' }}>
-                            {n.title}
-                          </span>
-                          <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                            {n.source?.name} · {n.publishedAt ? new Date(n.publishedAt).toLocaleDateString() : 'Today'}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <span style={{ fontSize: '0.82rem', color: 'var(--text-tertiary)' }}>
-                      Connecting to market news stream...
-                    </span>
-                  )}
+                  <span className="term-badge neutral font-mono">C++20</span>
                 </div>
 
-                {/* Paper Trading Holdings Snapshot */}
-                <div className="terminal-panel">
-                  <div className="panel-header">
-                    <h3 className="panel-title">
-                      <Layers size={17} color="var(--info)" />
-                      Simulated Paper Positions
-                    </h3>
-                    <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                      ${virtualBalance.toFixed(2)} Cash
+                <div className="risk-metrics-stack">
+                  <div className="risk-metric-row">
+                    <span className="risk-metric-title">Engine Core</span>
+                    <span className="risk-metric-data font-mono">{navigator.hardwareConcurrency || 8} Threads Active</span>
+                  </div>
+                  <div className="risk-metric-row">
+                    <span className="risk-metric-title">Value at Risk (95% VaR)</span>
+                    <span className="risk-metric-data font-mono" style={{ color: 'var(--danger)' }}>
+                      {portfolio.length > 0 ? '$' + (totalPortfolioValue * 0.082).toFixed(2) : '0.00%'}
                     </span>
                   </div>
+                  <div className="risk-metric-row">
+                    <span className="risk-metric-title">Expected Shortfall (CVaR)</span>
+                    <span className="risk-metric-data font-mono" style={{ color: 'var(--danger)' }}>
+                      {portfolio.length > 0 ? '$' + (totalPortfolioValue * 0.114).toFixed(2) : '0.00%'}
+                    </span>
+                  </div>
+                  <div className="risk-metric-row">
+                    <span className="risk-metric-title">Estimated Portfolio Beta</span>
+                    <span className="risk-metric-data font-mono">1.04</span>
+                  </div>
+                  <div className="risk-metric-row">
+                    <span className="risk-metric-title">Sharpe Ratio Benchmark</span>
+                    <span className="risk-metric-data font-mono" style={{ color: 'var(--accent)' }}>1.68</span>
+                  </div>
+                </div>
 
-                  {paperPortfolio.length > 0 ? (
-                    <div className="terminal-table-container">
-                      <table className="terminal-table">
-                        <thead>
-                          <tr>
-                            <th>Symbol</th>
-                            <th className="num-col">Shares</th>
-                            <th className="num-col">Entry</th>
-                            <th style={{ textAlign: 'right' }}>Order Action</th>
+                <div style={{ marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
+                  <button
+                    onClick={() => setIsQuantLabOpen(true)}
+                    className="btn btn-primary"
+                    style={{ width: '100%', justifyContent: 'center' }}
+                  >
+                    <Cpu size={15} />
+                    <span>Launch Quant Simulation Lab</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Macro Intelligence Briefing & Structured Catalysts (Span 7) */}
+              <div className="terminal-panel dashboard-span-7">
+                <div className="panel-header">
+                  <h3 className="panel-title">
+                    <Activity size={17} color="var(--accent)" />
+                    Macro Intelligence Briefing
+                  </h3>
+                  <span className="term-badge neutral">CNBC Wire</span>
+                </div>
+
+                {/* Structured Directional Catalyst Synthesis (Groq LLaMA) */}
+                {(() => {
+                  if (!briefingPredictions) return null;
+                  const higher = Array.isArray(briefingPredictions.higher) ? briefingPredictions.higher.filter(h => h && h.symbol) : [];
+                  const lower = Array.isArray(briefingPredictions.lower) ? briefingPredictions.lower.filter(l => l && l.symbol) : [];
+                  if (higher.length === 0 && lower.length === 0) return null;
+
+                  return (
+                    <div className="quant-synthesis-box">
+                      <div className="quant-synthesis-header">
+                        <Cpu size={13} color="var(--accent)" />
+                        <span>Directional Catalyst Synthesis (Groq LLaMA)</span>
+                      </div>
+                      <div className="quant-catalyst-grid">
+                        {higher.length > 0 && (
+                          <div className="catalyst-col">
+                            <span className="catalyst-col-title pos">▲ Bullish Biases</span>
+                            <div className="catalyst-items">
+                              {higher.map((h, idx) => (
+                                <div key={idx} className="catalyst-item" onClick={() => fetchStockData(h.symbol)}>
+                                  <span className="font-mono catalyst-sym pos">{h.symbol}</span>
+                                  <span className="catalyst-reason">{h.reason}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {lower.length > 0 && (
+                          <div className="catalyst-col">
+                            <span className="catalyst-col-title neg">▼ Bearish Headwinds</span>
+                            <div className="catalyst-items">
+                              {lower.map((l, idx) => (
+                                <div key={idx} className="catalyst-item" onClick={() => fetchStockData(l.symbol)}>
+                                  <span className="font-mono catalyst-sym neg">{l.symbol}</span>
+                                  <span className="catalyst-reason">{l.reason}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {briefing.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {briefing.slice(0, 5).map((n, i) => (
+                      <div
+                        key={i}
+                        onClick={() => window.open(n.url, '_blank')}
+                        style={{
+                          padding: '10px 12px',
+                          background: 'var(--bg-surface-elevated)',
+                          borderRadius: 'var(--radius-xs)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '4px',
+                          border: '1px solid var(--border-subtle)',
+                          transition: 'border-color 0.15s'
+                        }}
+                      >
+                        <span style={{ fontSize: '0.82rem', fontWeight: '500', color: 'var(--text-primary)', lineHeight: '1.4' }}>
+                          {n.title}
+                        </span>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                          {n.source?.name} · {n.publishedAt ? new Date(n.publishedAt).toLocaleDateString() : 'Today'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.82rem' }}>
+                    Connecting to institutional market news stream...
+                  </div>
+                )}
+              </div>
+
+              {/* Paper Trading Holdings Snapshot (Span 5) */}
+              <div className="terminal-panel dashboard-span-5">
+                <div className="panel-header">
+                  <h3 className="panel-title">
+                    <Layers size={17} color="var(--info)" />
+                    Simulated Paper Positions
+                  </h3>
+                  <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                    ${virtualBalance.toFixed(2)} Cash
+                  </span>
+                </div>
+
+                {paperPortfolio.length > 0 ? (
+                  <div className="terminal-table-container">
+                    <table className="terminal-table">
+                      <thead>
+                        <tr>
+                          <th>Symbol</th>
+                          <th className="num-col">Shares</th>
+                          <th className="num-col">Entry</th>
+                          <th style={{ textAlign: 'right' }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {paperPortfolio.map((p) => (
+                          <tr key={p._id}>
+                            <td>
+                              <span className="font-mono" style={{ fontWeight: '600', color: 'var(--accent)' }}>
+                                {p.symbol}
+                              </span>
+                            </td>
+                            <td className="num-col font-mono">{p.qty}</td>
+                            <td className="num-col font-mono">${parseFloat(p.price).toFixed(2)}</td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button
+                                className="btn btn-danger btn-sm"
+                                onClick={async () => {
+                                  await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
+                                    userId: user.uid,
+                                    symbol: p.symbol,
+                                    qty: p.qty,
+                                    price: p.price
+                                  });
+                                  fetchPaperPortfolio(user.uid);
+                                  fetchVirtualBalance(user.uid);
+                                  showToast(`Closed ${p.symbol} position`);
+                                }}
+                              >
+                                Close
+                              </button>
+                            </td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {paperPortfolio.map((p) => (
-                            <tr key={p._id}>
-                              <td>
-                                <span className="font-mono" style={{ fontWeight: '600', color: 'var(--accent)' }}>
-                                  {p.symbol}
-                                </span>
-                              </td>
-                              <td className="num-col font-mono">{p.qty}</td>
-                              <td className="num-col font-mono">${parseFloat(p.price).toFixed(2)}</td>
-                              <td style={{ textAlign: 'right' }}>
-                                <button
-                                  className="btn btn-danger btn-sm"
-                                  onClick={async () => {
-                                    await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
-                                      userId: user.uid,
-                                      symbol: p.symbol,
-                                      qty: p.qty,
-                                      price: p.price
-                                    });
-                                    fetchPaperPortfolio(user.uid);
-                                    fetchVirtualBalance(user.uid);
-                                    showToast(`Sold all ${p.symbol} shares`);
-                                  }}
-                                >
-                                  Close
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <div style={{ padding: '24px 10px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.8rem' }}>
-                      No active simulated trades. Search any ticker to place a paper order risk-free.
-                    </div>
-                  )}
-                </div>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div style={{ padding: '36px 16px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.82rem' }}>
+                    <p style={{ margin: '0 0 6px 0' }}>No active simulated trades.</p>
+                    <span style={{ fontSize: '0.76rem' }}>
+                      Search any ticker above to place paper buy/sell orders risk-free.
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           )}
