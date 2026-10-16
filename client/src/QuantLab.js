@@ -392,8 +392,8 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     }
     ctx.closePath();
     const grad90 = ctx.createLinearGradient(0, padding.top, 0, height - padding.bottom);
-    grad90.addColorStop(0, 'rgba(59, 130, 246, 0.25)');
-    grad90.addColorStop(1, 'rgba(59, 130, 246, 0.05)');
+    grad90.addColorStop(0, 'rgba(105, 211, 154, 0.12)');
+    grad90.addColorStop(1, 'rgba(105, 211, 154, 0.02)');
     ctx.fillStyle = grad90;
     ctx.fill();
 
@@ -411,14 +411,14 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
       ctx.lineTo(x, y);
     }
     ctx.closePath();
-    ctx.fillStyle = 'rgba(139, 92, 246, 0.22)';
+    ctx.fillStyle = 'rgba(105, 211, 154, 0.20)';
     ctx.fill();
 
     // 3. Faint stochastic sample paths
     if (samplePaths && samplePaths.length > 0) {
       ctx.lineWidth = 1;
       samplePaths.forEach((path, idx) => {
-        ctx.strokeStyle = idx % 2 === 0 ? 'rgba(148, 163, 184, 0.15)' : 'rgba(99, 102, 241, 0.18)';
+        ctx.strokeStyle = idx % 2 === 0 ? 'rgba(155, 169, 159, 0.12)' : 'rgba(105, 211, 154, 0.15)';
         ctx.beginPath();
         path.forEach((val, i) => {
           const x = getX(i);
@@ -432,7 +432,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
 
     // 4. Baseline Initial Value Dotted Line
     const initY = getY(portfolio.initialValue);
-    ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
+    ctx.strokeStyle = 'rgba(248, 113, 113, 0.5)';
     ctx.setLineDash([4, 4]);
     ctx.beginPath();
     ctx.moveTo(padding.left, initY);
@@ -442,21 +442,21 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
 
     // 5. Percentile Lines
     // p95 (Bullish green)
-    ctx.strokeStyle = '#10b981';
+    ctx.strokeStyle = '#4ADE80';
     ctx.lineWidth = 2;
     ctx.beginPath();
     trajectories.p95.forEach((v, i) => (i === 0 ? ctx.moveTo(getX(i), getY(v)) : ctx.lineTo(getX(i), getY(v))));
     ctx.stroke();
 
     // p5 (Bearish red)
-    ctx.strokeStyle = '#ef4444';
+    ctx.strokeStyle = '#F87171';
     ctx.lineWidth = 2;
     ctx.beginPath();
     trajectories.p5.forEach((v, i) => (i === 0 ? ctx.moveTo(getX(i), getY(v)) : ctx.lineTo(getX(i), getY(v))));
     ctx.stroke();
 
-    // p50 (Median bright cyan)
-    ctx.strokeStyle = '#38bdf8';
+    // p50 (Median primary accent green)
+    ctx.strokeStyle = '#69D39A';
     ctx.lineWidth = 3;
     ctx.beginPath();
     trajectories.p50.forEach((v, i) => (i === 0 ? ctx.moveTo(getX(i), getY(v)) : ctx.lineTo(getX(i), getY(v))));
@@ -472,15 +472,15 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
       ctx.beginPath();
       ctx.arc(lastX, y, 4, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = '#f8fafc';
+      ctx.fillStyle = '#E5ECE7';
       ctx.font = 'bold 10px "JetBrains Mono", monospace';
       ctx.textAlign = 'right';
       ctx.fillText(`${text}: $${Math.round(val).toLocaleString()}`, width - padding.right, y - 6);
     };
 
-    drawLabel(trajectories.p95[lastIdx], '#10b981', 'Bull (95%)');
-    drawLabel(trajectories.p50[lastIdx], '#38bdf8', 'Median (50%)');
-    drawLabel(trajectories.p5[lastIdx], '#ef4444', 'Bear (5%)');
+    drawLabel(trajectories.p95[lastIdx], '#4ADE80', 'Bull (95%)');
+    drawLabel(trajectories.p50[lastIdx], '#69D39A', 'Median (50%)');
+    drawLabel(trajectories.p5[lastIdx], '#F87171', 'Bear (5%)');
 
   }, [result, activeTab]);
 
@@ -553,7 +553,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
 
     // Draw Efficient Frontier Curve
     if (curve && curve.length > 1) {
-      ctx.strokeStyle = '#3b82f6';
+      ctx.strokeStyle = '#69D39A';
       ctx.lineWidth = 3;
       ctx.beginPath();
       curve.forEach((pt, i) => {
@@ -568,11 +568,11 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     // 1. Min Volatility Point (Cyan diamond)
     const mvX = getX(minVol.volatility);
     const mvY = getY(minVol.expectedReturn);
-    ctx.fillStyle = '#06b6d4';
+    ctx.fillStyle = '#60A5FA';
     ctx.beginPath();
     ctx.arc(mvX, mvY, 6, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = '#f8fafc';
+    ctx.fillStyle = '#E5ECE7';
     ctx.textAlign = 'left';
     ctx.fillText(`Min Vol (${(minVol.volatility * 100).toFixed(1)}%)`, mvX + 10, mvY - 4);
 
@@ -590,14 +590,14 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     // 3. Current Portfolio Point (Red Target)
     const cpX = getX(currentPort.volatility);
     const cpY = getY(currentPort.expectedReturn);
-    ctx.fillStyle = '#ef4444';
+    ctx.fillStyle = '#F87171';
     ctx.beginPath();
     ctx.arc(cpX, cpY, 7, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 2;
     ctx.stroke();
-    ctx.fillStyle = '#ef4444';
+    ctx.fillStyle = '#F87171';
     ctx.fillText(`Current (${currentPort.sharpeRatio.toFixed(2)} Sharpe)`, cpX + 12, cpY + 14);
 
   }, [result, activeTab, riskFreeRate]);
@@ -609,7 +609,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
         <div className="quant-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <div className="quant-icon-badge">
-              <Cpu size={24} color="#38bdf8" />
+              <Cpu size={24} color="#69D39A" />
             </div>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -816,7 +816,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
               <div className="benchmark-card">
                 <div className="benchmark-header">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Gauge size={20} color="#38bdf8" />
+                    <Gauge size={20} color="#69D39A" />
                     <span style={{ fontWeight: '700', fontSize: '0.95rem' }}>
                       {engineMode === 'local' ? 'Local Device Hardware Engine' : 'C++ Core vs Node.js V8 Engine Benchmark'}
                     </span>

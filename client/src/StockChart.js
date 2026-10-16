@@ -7,15 +7,15 @@ const StockChart = ({ data, theme }) => {
     useLayoutEffect(() => {
         if (!data || data.length === 0 || !chartContainerRef.current) return;
 
-        // 1. Define colors based on the current theme (matching our CSS variables)
+        // 1. Define colors based on the current theme (matching our terminal design system)
         const isDark = theme === 'dark';
         const colors = {
-            backgroundColor: isDark ? '#111827' : '#ffffff', // matches --bg-surface
-            textColor: isDark ? '#94a3b8' : '#5a6a82',       // matches --text-secondary
-            gridColor: isDark ? '#1e293b' : '#f0f2f5',       // matches --border-primary/subtle
-            maLineColor: isDark ? '#60a5fa' : '#2563eb',     // matches --accent
-            upColor: isDark ? '#10b981' : '#059669',         // matches --success
-            downColor: isDark ? '#ef4444' : '#dc2626',       // matches --danger
+            backgroundColor: isDark ? '#19231D' : '#ffffff', // matches --bg-panel
+            textColor: isDark ? '#9BA99F' : '#57685D',       // matches --text-secondary
+            gridColor: isDark ? '#242F27' : '#E2E8E4',       // matches --border-subtle
+            maLineColor: isDark ? '#69D39A' : '#1B8751',     // matches --accent
+            upColor: isDark ? '#4ADE80' : '#15803D',         // matches --success
+            downColor: isDark ? '#F87171' : '#DC2626',       // matches --danger
         };
 
         // 2. Clear container
@@ -102,9 +102,9 @@ const StockChart = ({ data, theme }) => {
             ref={chartContainerRef} 
             style={{ 
                 width: '100%', 
-                height: '450px', 
-                marginTop: '32px',
-                borderRadius: '8px',
+                height: '420px', 
+                marginTop: '16px',
+                borderRadius: 'var(--radius-sm)',
                 overflow: 'hidden',
                 border: '1px solid var(--border-primary)'
             }} 

@@ -1,95 +1,114 @@
 import React from 'react';
-import { BookOpen, TrendingUp, LineChart, Brain, Rocket, X } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { BookOpen, ArrowLeft, Activity, ShieldAlert, Cpu, BarChart2 } from 'lucide-react';
 
 const Academy = ({ onClose }) => {
   return (
-    <motion.div 
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -20 }}
-      style={{ paddingBottom: '40px' }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
-        <div>
-          <h1 className="gradient-text" style={{ fontSize: '2.5rem', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <BookOpen size={36} color="var(--accent)" /> FinIntel Academy
-          </h1>
-          <p className="text-muted" style={{ fontSize: '1.1rem' }}>Your crash course to mastering the market and using this dashboard.</p>
-        </div>
-        <button onClick={onClose} className="btn-outline" style={{ borderRadius: '50%', padding: '12px' }}>
-          <X size={24} />
+    <div style={{ animation: 'fadeIn 0.2s ease-out' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+        <button onClick={onClose} className="btn btn-ghost" style={{ padding: '6px 0' }}>
+          <ArrowLeft size={16} />
+          <span>Back to Overview</span>
         </button>
+        <span className="term-badge neutral">Quantitative Reference & Methodology</span>
       </div>
 
-      <div className="metrics-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
-        
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ padding: '12px', background: 'var(--accent-bg)', borderRadius: '12px', color: 'var(--accent)' }}>
-              <TrendingUp size={24} />
-            </div>
-            <h3 style={{ fontSize: '1.3rem' }}>Market Basics</h3>
+      <div className="terminal-panel" style={{ marginBottom: '16px' }}>
+        <div className="panel-header">
+          <div>
+            <h1 className="panel-title" style={{ fontSize: '1.2rem' }}>
+              <BookOpen size={20} color="var(--accent)" />
+              Financial Engineering & Analytics Reference
+            </h1>
+            <span className="panel-subtitle">
+              Theoretical frameworks, stochastic models, risk metrics, and terminal operation guide
+            </span>
           </div>
-          <p className="text-muted">
-            <strong>Stock:</strong> A tiny piece of ownership in a company. When they grow, your piece becomes more valuable.
-            <br/><br/>
-            <strong>Bull vs Bear:</strong> A "Bull" market is charging upward (prices rising). A "Bear" market is hibernating (prices falling).
-            <br/><br/>
-            <strong>Market Cap:</strong> The total dollar value of all a company's shares. It tells you how massive the company is.
+        </div>
+
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.86rem', margin: '0 0 16px 0', lineHeight: '1.6' }}>
+          FinIntel implements institutional financial models designed to measure risk, simulate tail events, and optimize asset allocation. Below is an overview of the core analytical principles embedded throughout the terminal.
+        </p>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+        {/* Module 1 */}
+        <div className="terminal-panel">
+          <div className="panel-header">
+            <h3 className="panel-title" style={{ fontSize: '0.88rem' }}>
+              <Cpu size={16} color="var(--accent)" />
+              Monte Carlo Simulation & GBM
+            </h3>
+            <span className="term-badge neutral">Stochastic SDE</span>
+          </div>
+          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: '1.6', margin: 0 }}>
+            Asset trajectories are modeled via <strong>Geometric Brownian Motion (GBM)</strong>:
+            <br />
+            <code className="font-mono" style={{ display: 'block', padding: '8px 10px', background: 'var(--bg-surface-elevated)', borderRadius: 'var(--radius-xs)', margin: '8px 0', fontSize: '0.78rem', color: 'var(--text-primary)' }}>
+              S(t+Δt) = S(t) · exp((μ - 0.5σ²)Δt + σ√Δt · Z)
+            </code>
+            Where <span className="font-mono">μ</span> is annualized drift, <span className="font-mono">σ</span> is volatility, and <span className="font-mono">Z</span> is a standard normal shock. Cross-asset correlation is modeled via <strong>Cholesky decomposition</strong> (<span className="font-mono">R = L·Lᵀ</span>).
           </p>
         </div>
 
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ padding: '12px', background: 'var(--purple-bg)', borderRadius: '12px', color: 'var(--purple)' }}>
-              <LineChart size={24} />
-            </div>
-            <h3 style={{ fontSize: '1.3rem' }}>Understanding Indicators</h3>
+        {/* Module 2 */}
+        <div className="terminal-panel">
+          <div className="panel-header">
+            <h3 className="panel-title" style={{ fontSize: '0.88rem' }}>
+              <ShieldAlert size={16} color="var(--danger)" />
+              Value-at-Risk (VaR) & CVaR
+            </h3>
+            <span className="term-badge neg">Risk Theory</span>
           </div>
-          <p className="text-muted">
-            <strong>RSI (Relative Strength Index):</strong> A momentum score from 0 to 100. 
-            <br/><br/>
-            - <strong>Under 35:</strong> "Oversold" (Could be a good time to buy).<br/>
-            - <strong>Over 65:</strong> "Overbought" (Might be too expensive right now).<br/>
-            - <strong>Middle:</strong> Normal trading activity.
-            <br/><br/>
-            <strong>P/E Ratio:</strong> How much you pay for $1 of the company's profit. Lower usually means better value!
+          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: '1.6', margin: 0 }}>
+            <strong>Value-at-Risk (VaR 95%)</strong> defines the maximum expected dollar loss at a 95% statistical confidence interval over a given holding period.
+            <br /><br />
+            <strong>Conditional VaR (CVaR / Expected Shortfall)</strong> measures the expected loss conditional on exceeding the VaR cutoff:
+            <code className="font-mono" style={{ display: 'block', padding: '8px 10px', background: 'var(--bg-surface-elevated)', borderRadius: 'var(--radius-xs)', margin: '8px 0', fontSize: '0.78rem', color: 'var(--text-primary)' }}>
+              CVaR_α = E[ Loss | Loss ≥ VaR_α ]
+            </code>
+            This captures fat-tail risk as mandated under Basel III banking guidelines.
           </p>
         </div>
 
-        <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '16px', gridColumn: '1 / -1' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ padding: '12px', background: 'var(--success-bg)', borderRadius: '12px', color: 'var(--success)' }}>
-              <Brain size={24} />
-            </div>
-            <h3 style={{ fontSize: '1.3rem' }}>How to use FinIntel</h3>
+        {/* Module 3 */}
+        <div className="terminal-panel">
+          <div className="panel-header">
+            <h3 className="panel-title" style={{ fontSize: '0.88rem' }}>
+              <Activity size={16} color="var(--info)" />
+              Modern Portfolio Theory (MPT)
+            </h3>
+            <span className="term-badge neutral">Markowitz</span>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '20px', marginTop: '10px' }}>
-            <div>
-              <strong style={{ color: 'var(--text-primary)' }}>1. Search Globally</strong>
-              <p className="text-muted text-small">Type any US ticker (e.g. AAPL) or Indian stock (e.g. TCS.NS) in the top bar to get instant charts and data.</p>
-            </div>
-            <div>
-              <strong style={{ color: 'var(--text-primary)' }}>2. AI Deep Dive</strong>
-              <p className="text-muted text-small">Click "Generate Deep Dive" on any stock to get an expert, human-readable analysis powered by Groq AI.</p>
-            </div>
-            <div>
-              <strong style={{ color: 'var(--text-primary)' }}>3. Track Portfolio</strong>
-              <p className="text-muted text-small">Add stocks to your Watchlist or Portfolio. You can even export your holdings to PDF or CSV!</p>
-            </div>
-            <div>
-              <strong style={{ color: 'var(--text-primary)' }}>4. Set Alerts</strong>
-              <p className="text-muted text-small">Set target prices. We will tell you if the price goes above or below your target.</p>
-            </div>
-          </div>
-          <button onClick={onClose} className="btn-primary" style={{ marginTop: '20px', alignSelf: 'flex-start' }}>
-            <Rocket size={18} /> I'm ready to trade!
-          </button>
+          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: '1.6', margin: 0 }}>
+            Developed by Harry Markowitz, MPT constructs the <strong>Efficient Frontier</strong> by balancing portfolio expected return <span className="font-mono">E[R_p]</span> against portfolio variance:
+            <code className="font-mono" style={{ display: 'block', padding: '8px 10px', background: 'var(--bg-surface-elevated)', borderRadius: 'var(--radius-xs)', margin: '8px 0', fontSize: '0.78rem', color: 'var(--text-primary)' }}>
+              σ_p² = wᵀ Σ w
+            </code>
+            The <strong>Tangency Portfolio</strong> maximizes the Sharpe Ratio along the Capital Allocation Line (CAL), providing the maximum excess return per unit of volatility.
+          </p>
         </div>
 
+        {/* Module 4 */}
+        <div className="terminal-panel">
+          <div className="panel-header">
+            <h3 className="panel-title" style={{ fontSize: '0.88rem' }}>
+              <BarChart2 size={16} color="var(--warning)" />
+              Technical Indicators & RSI
+            </h3>
+            <span className="term-badge neutral">Technicals</span>
+          </div>
+          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: '1.6', margin: 0 }}>
+            <strong>Relative Strength Index (RSI 14)</strong> measures the velocity of price changes on a scale from 0 to 100:
+            <br />
+            • <span className="font-mono" style={{ color: 'var(--success)' }}>RSI &lt; 30</span>: Oversold momentum condition.
+            <br />
+            • <span className="font-mono" style={{ color: 'var(--danger)' }}>RSI &gt; 70</span>: Overbought momentum condition.
+            <br /><br />
+            Combined with a 20-day Simple Moving Average (SMA), it tracks mean-reversion probabilities without subjective chart drawing.
+          </p>
+        </div>
       </div>
-    </motion.div>
+    </div>
   );
 };
 
