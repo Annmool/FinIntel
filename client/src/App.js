@@ -2,13 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Routes, Route, useNavigate, Navigate } from 'react-router-dom';
-import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download, BookOpen, Activity } from 'lucide-react';
+import { Search, Moon, Sun, LogOut, Star, ArrowLeft, TrendingUp, BarChart3, Brain, Plus, Bell, CheckCircle2, AlertCircle, Menu, X, Download, BookOpen, Activity, Cpu } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import Academy from './Academy';
 import Screener from './Screener';
 import StockChart from './StockChart';
 import TickerTape from './TickerTape';
+import QuantLab from './QuantLab';
 import { calculateRSI } from './utils/indicators';
 import { auth, provider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged } from "firebase/auth";
@@ -58,6 +59,7 @@ function App() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [isQuantLabOpen, setIsQuantLabOpen] = useState(false);
   const searchInputRef = useRef(null);
   const searchContainerRef = useRef(null);
   
@@ -442,9 +444,30 @@ function App() {
             Academy for Beginners
           </button>
           
-          <button onClick={() => { navigate('/screener'); setIsMobileMenuOpen(false); setData(null); }} className="btn-outline" style={{ width: '100%', marginBottom: '2rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
+          <button onClick={() => { navigate('/screener'); setIsMobileMenuOpen(false); setData(null); }} className="btn-outline" style={{ width: '100%', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: 'var(--accent-bg)', color: 'var(--accent)', border: '1px solid var(--accent)' }}>
             <Activity size={18} />
             Stock Screener
+          </button>
+
+          <button 
+            onClick={() => { setIsQuantLabOpen(true); setIsMobileMenuOpen(false); }} 
+            className="btn-outline" 
+            style={{ 
+              width: '100%', 
+              marginBottom: '2rem', 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center', 
+              gap: '8px', 
+              background: 'linear-gradient(135deg, rgba(2, 132, 199, 0.15), rgba(56, 189, 248, 0.15))', 
+              color: '#38bdf8', 
+              border: '1px solid rgba(56, 189, 248, 0.4)',
+              fontWeight: '700',
+              boxShadow: '0 0 15px rgba(56, 189, 248, 0.1)'
+            }}
+          >
+            <Cpu size={18} />
+            ⚡ Quant Lab (C++ Engine)
           </button>
           
           <div className="sidebar-section-title">
@@ -578,6 +601,7 @@ function App() {
           <Routes>
             <Route path="/academy" element={<Academy onClose={() => navigate('/')} />} />
             <Route path="/screener" element={<Screener onClose={() => navigate('/')} onSelectSymbol={(sym) => { fetchStockData(sym); navigate('/'); }} />} />
+            <Route path="/quant" element={<QuantLab onClose={() => navigate('/')} userPortfolio={portfolio} paperPortfolio={paperPortfolio} />} />
             <Route path="/" element={
               <>
                 <div ref={searchContainerRef} style={{ position: 'relative', display: 'flex', gap: '8px', marginBottom: '32px', maxWidth: '600px' }}>
@@ -886,6 +910,16 @@ function App() {
           </Routes>
         </main>
       </div>
+
+      <AnimatePresence>
+        {isQuantLabOpen && (
+          <QuantLab
+            onClose={() => setIsQuantLabOpen(false)}
+            userPortfolio={portfolio}
+            paperPortfolio={paperPortfolio}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {toast.show && (
