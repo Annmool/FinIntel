@@ -502,5 +502,100 @@ app.post('/api/ai-analysis', async (req, res) => {
     } catch (error) { res.status(500).send("AI Error"); }
 });
 
+// --- 7. C++ High-Performance Quantitative Computing Core ---
+const { PRESETS, runCppQuantEngine, runJsMonteCarloBenchmark, computeAssetParameters } = require('./quant_service');
+
+app.get('/api/quant/presets', (req, res) => {
+    res.json(PRESETS);
+});
+
+app.post('/api/quant/simulate', async (req, res) => {
+    try {
+        const {
+            symbols = ['AAPL', 'MSFT', 'NVDA'],
+            weights = [0.34, 0.33, 0.33],
+            numSimulations = 50000,
+            timeHorizonDays = 90,
+            initialPortfolioValue = 100000,
+            riskFreeRate = 0.045,
+            expectedReturns,
+            volatilities,
+            correlationMatrix
+        } = req.body;
+
+        let finalReturns = expectedReturns;
+        let finalVols = volatilities;
+        let finalCorr = correlationMatrix;
+
+        // If returns/vols are not provided, try to fetch historical data or use standard estimates
+        if (!finalReturns || !finalVols || !finalCorr) {
+            const historyMap = {};
+            for (const sym of symbols) {
+                try {
+                    const cacheKey = `stock_${sym.toUpperCase()}`;
+                    let cached = myCache.get(cacheKey);
+                    if (!cached) {
+                        const oneYearAgo = new Date();
+                        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+                        const queryOptions = { period1: oneYearAgo.toISOString().split('T')[0], interval: '1d' };
+                        const result = await yahooFinance.chart(sym, queryOptions, { validateResult: false });
+                        if (result && result.quotes) {
+                            cached = { values: result.quotes.filter(q => q.close).map(q => ({ close: q.close })) };
+                            myCache.set(cacheKey, cached, 3600);
+                        }
+                    }
+                    if (cached && cached.values) {
+                        historyMap[sym] = cached.values;
+                    }
+                } catch (err) {
+                    console.log(`Note: Using model default stats for ${sym}`);
+                }
+            }
+
+            const computed = computeAssetParameters(historyMap, symbols);
+            finalReturns = finalReturns || computed.expectedReturns;
+            finalVols = finalVols || computed.volatilities;
+            finalCorr = finalCorr || computed.correlationMatrix;
+        }
+
+        const inputPayload = {
+            symbols,
+            weights,
+            numSimulations: Math.min(200000, Math.max(1000, parseInt(numSimulations) || 50000)),
+            timeHorizonDays: Math.min(365, Math.max(10, parseInt(timeHorizonDays) || 90)),
+            initialPortfolioValue: parseFloat(initialPortfolioValue) || 100000,
+            riskFreeRate: parseFloat(riskFreeRate) || 0.045,
+            expectedReturns: finalReturns,
+            volatilities: finalVols,
+            correlationMatrix: finalCorr
+        };
+
+        // Run C++ Engine
+        const cppResult = await runCppQuantEngine(inputPayload);
+
+        // Run JS Benchmark on identical parameters
+        const jsBenchmark = runJsMonteCarloBenchmark(inputPayload);
+        const speedupFactor = cppResult.benchmark.executionTimeMs > 0
+            ? Number((jsBenchmark.executionTimeMs / cppResult.benchmark.executionTimeMs).toFixed(1))
+            : 1.0;
+
+        res.json({
+            success: true,
+            cpp: cppResult,
+            jsBenchmark,
+            speedupFactor,
+            systemSpecs: {
+                compiler: "MSYS2 UCRT64 GCC 14.2.0 (C++20)",
+                vectorization: "SIMD & OpenMP Parallel Loop Partitioning",
+                prng: "Thread-Local 64-bit Mersenne Twister (std::mt19937_64)",
+                threads: cppResult.benchmark.numThreads
+            }
+        });
+    } catch (error) {
+        console.error("Quant Simulation Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));

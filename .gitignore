@@ -31,3 +31,8 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Native Binaries
+*.exe
+server/quant_core/quant_engine
+
