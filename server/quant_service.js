@@ -1,7 +1,29 @@
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 
-const QUANT_BINARY = path.join(__dirname, 'quant_core', 'quant_engine.exe');
+const isWindows = process.platform === 'win32';
+const BINARY_NAME = isWindows ? 'quant_engine.exe' : 'quant_engine';
+const QUANT_BINARY = path.join(__dirname, 'quant_core', BINARY_NAME);
+const SOURCE_FILE = path.join(__dirname, 'quant_core', 'quant_engine.cpp');
+
+// Auto-compile helper if binary is missing (e.g. on fresh Render Linux deploy)
+function ensureBinaryExists() {
+  if (fs.existsSync(QUANT_BINARY)) return true;
+  console.log(`[QuantCore] Native binary missing at ${QUANT_BINARY}. Attempting compilation with g++...`);
+  try {
+    const compileCmd = `g++ -O3 -fopenmp -std=c++20 "${SOURCE_FILE}" -o "${QUANT_BINARY}"`;
+    execSync(compileCmd, { stdio: 'inherit' });
+    if (!isWindows) {
+      try { fs.chmodSync(QUANT_BINARY, 0o755); } catch (_) {}
+    }
+    console.log(`[QuantCore] Successfully compiled native binary: ${BINARY_NAME}`);
+    return true;
+  } catch (err) {
+    console.error(`[QuantCore] Auto-compilation failed: ${err.message}`);
+    return false;
+  }
+}
 
 // Standard Institutional Portfolio Presets
 const PRESETS = {
@@ -44,6 +66,8 @@ const PRESETS = {
  */
 function runCppQuantEngine(inputData) {
   return new Promise((resolve, reject) => {
+    ensureBinaryExists();
+
     const child = spawn(QUANT_BINARY, [], {
       windowsHide: true,
       env: process.env

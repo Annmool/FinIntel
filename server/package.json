@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "g++ -O3 -fopenmp -std=c++20 quant_core/quant_engine.cpp -o quant_core/quant_engine",
+    "start": "node index.js",
     "dev": "nodemon index.js"
   },
   "keywords": [],
