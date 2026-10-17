@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { ArrowLeft, Activity, ArrowUpRight, ArrowDownRight, Search } from 'lucide-react';
+import { ArrowLeft, Activity, ArrowUpRight, ArrowDownRight, Search, RefreshCw } from 'lucide-react';
 
 const API_URL = process.env.NODE_ENV === 'production' ? 'https://finintel-qj46.onrender.com' : 'http://localhost:5000';
 
@@ -9,6 +9,7 @@ function Screener({ onClose, onSelectSymbol }) {
     const [stocks, setStocks] = useState([]);
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
+    const [error, setError] = useState('');
 
     useEffect(() => {
         fetchScreener(filterType);
@@ -16,21 +17,48 @@ function Screener({ onClose, onSelectSymbol }) {
 
     const fetchScreener = async (type) => {
         setLoading(true);
+        setError('');
         try {
             const res = await axios.get(`${API_URL}/api/screener/${type}`);
-            setStocks(res.data || []);
+            if (!Array.isArray(res.data)) throw new Error('The market data service returned an unexpected response.');
+            setStocks(res.data);
         } catch (e) {
             console.error("Screener Error", e);
             setStocks([]);
+            setError(e.response?.data?.error || e.message || 'Unable to load market data. Please try again.');
+        } finally {
+            setLoading(false);
         }
-        setLoading(false);
+    };
+
+    const getSymbolCurrency = (s) => {
+        if (!s) return '$';
+        if (s.currency === 'INR' || s.symbol?.endsWith('.NS') || s.symbol?.endsWith('.BO')) return '₹';
+        return '$';
+    };
+
+    const formatVolume = (vol) => {
+        if (!Number.isFinite(vol) || vol <= 0) return '--';
+        if (vol >= 1e9) return (vol / 1e9).toFixed(2) + 'B';
+        if (vol >= 1e6) return (vol / 1e6).toFixed(1) + 'M';
+        if (vol >= 1e3) return (vol / 1e3).toFixed(0) + 'K';
+        return vol.toString();
+    };
+
+    const formatCap = (cap, cur) => {
+        if (!Number.isFinite(cap) || cap <= 0) return '--';
+        if (cap >= 1e12) return `${cur}${(cap / 1e12).toFixed(2)}T`;
+        if (cap >= 1e9) return `${cur}${(cap / 1e9).toFixed(1)}B`;
+        if (cap >= 1e6) return `${cur}${(cap / 1e6).toFixed(1)}M`;
+        return `${cur}${cap.toFixed(0)}`;
     };
 
     const filteredStocks = stocks.filter(s => {
         if (!searchTerm) return true;
         const q = searchTerm.toLowerCase();
         return (s.symbol && s.symbol.toLowerCase().includes(q)) || 
-               (s.shortName && s.shortName.toLowerCase().includes(q));
+               (s.shortName && s.shortName.toLowerCase().includes(q)) ||
+               (s.longName && s.longName.toLowerCase().includes(q));
     });
 
     return (
@@ -43,28 +71,36 @@ function Screener({ onClose, onSelectSymbol }) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <span className="term-badge neutral">Live Market Screener</span>
                     <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-                        {stocks.length} instruments
+                        {stocks.length} instruments loaded
                     </span>
+                    <button
+                        onClick={() => fetchScreener(filterType)}
+                        className="btn btn-ghost btn-sm"
+                        title="Refresh Screener Feed"
+                        style={{ padding: '4px' }}
+                    >
+                        <RefreshCw size={13} className={loading ? 'spin' : ''} />
+                    </button>
                 </div>
             </div>
 
             <div className="terminal-panel">
-                <div className="panel-header">
+                <div className="panel-header" style={{ flexWrap: 'wrap', gap: '12px' }}>
                     <div>
                         <h2 className="panel-title">
                             <Activity size={18} color="var(--accent)" />
-                            Market Screener & Sector Discovery
+                            Institutional Market Screener & Global Discovery
                         </h2>
                         <span className="panel-subtitle">
-                            Filter securities by momentum, volume surges, and institutional valuation multiples
+                            Real-time momentum, volume surges, institutional valuation multiples, and cross-border equities
                         </span>
                     </div>
 
-                    <div style={{ position: 'relative', width: '220px' }}>
+                    <div style={{ position: 'relative', width: '240px' }}>
                         <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                         <input
                             type="text"
-                            placeholder="Filter results..."
+                            placeholder="Filter by symbol or name..."
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
                             style={{
@@ -106,11 +142,34 @@ function Screener({ onClose, onSelectSymbol }) {
                     >
                         Undervalued Large Caps
                     </button>
+                    <button
+                        onClick={() => setFilterType('tech_titans')}
+                        className={`btn ${filterType === 'tech_titans' ? 'btn-primary' : 'btn-secondary'}`}
+                    >
+                        Tech Titans & AI
+                    </button>
+                    <button
+                        onClick={() => setFilterType('indian_market')}
+                        className={`btn ${filterType === 'indian_market' ? 'btn-primary' : 'btn-secondary'}`}
+                    >
+                        Indian Equities (NSE)
+                    </button>
                 </div>
 
+                {error && !loading && (
+                    <div className="screener-error" role="alert" style={{ marginBottom: '16px' }}>
+                        <div>
+                            <strong>Market data notice</strong>
+                            <span>{error}</span>
+                        </div>
+                        <button className="btn btn-secondary btn-sm" onClick={() => fetchScreener(filterType)}>Retry</button>
+                    </div>
+                )}
+
                 {loading ? (
-                    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '60px 0' }}>
-                        <span className="font-mono text-muted" style={{ fontSize: '0.85rem' }}>Querying market quote feed...</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '60px 0', gap: '10px' }}>
+                        <RefreshCw size={24} className="spin" color="var(--accent)" />
+                        <span className="font-mono text-muted" style={{ fontSize: '0.85rem' }}>Querying high-frequency market quote feed...</span>
                     </div>
                 ) : (
                     <div className="terminal-table-container">
@@ -122,18 +181,23 @@ function Screener({ onClose, onSelectSymbol }) {
                                     <th className="num-col">Last Price</th>
                                     <th className="num-col">Day Change</th>
                                     <th className="num-col">Day Range</th>
+                                    <th className="num-col">Volume</th>
                                     <th className="num-col">Market Cap</th>
+                                    <th className="num-col">P/E</th>
                                     <th style={{ textAlign: 'right' }}>Action</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {filteredStocks.map((s, i) => {
-                                    const change = s.regularMarketChangePercent || 0;
+                                    const change = Number.isFinite(s.regularMarketChangePercent) ? s.regularMarketChangePercent : 0;
                                     const isPos = change >= 0;
-                                    const price = s.regularMarketPrice ? s.regularMarketPrice.toFixed(2) : '--';
-                                    const high = s.regularMarketDayHigh ? s.regularMarketDayHigh.toFixed(2) : null;
-                                    const low = s.regularMarketDayLow ? s.regularMarketDayLow.toFixed(2) : null;
-                                    const mktCap = s.marketCap ? (s.marketCap / 1e9).toFixed(1) + 'B' : '--';
+                                    const cur = getSymbolCurrency(s);
+                                    const price = Number.isFinite(s.regularMarketPrice) ? `${cur}${s.regularMarketPrice.toFixed(2)}` : '--';
+                                    const high = Number.isFinite(s.regularMarketDayHigh) ? `${cur}${s.regularMarketDayHigh.toFixed(2)}` : null;
+                                    const low = Number.isFinite(s.regularMarketDayLow) ? `${cur}${s.regularMarketDayLow.toFixed(2)}` : null;
+                                    const mktCap = formatCap(s.marketCap, cur);
+                                    const volume = formatVolume(s.regularMarketVolume);
+                                    const pe = Number.isFinite(s.trailingPE) && s.trailingPE > 0 ? s.trailingPE.toFixed(1) : '--';
 
                                     return (
                                         <tr key={s.symbol || i} onClick={() => onSelectSymbol(s.symbol)} style={{ cursor: 'pointer' }}>
@@ -142,11 +206,11 @@ function Screener({ onClose, onSelectSymbol }) {
                                                     {s.symbol}
                                                 </span>
                                             </td>
-                                            <td style={{ maxWidth: '240px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--text-secondary)' }}>
+                                            <td style={{ maxWidth: '220px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--text-secondary)' }}>
                                                 {s.shortName || s.longName || s.symbol}
                                             </td>
                                             <td className="num-col font-mono" style={{ fontWeight: '600' }}>
-                                                ${price}
+                                                {price}
                                             </td>
                                             <td className="num-col font-mono">
                                                 <span className={`term-badge ${isPos ? 'pos' : 'neg'}`}>
@@ -155,10 +219,16 @@ function Screener({ onClose, onSelectSymbol }) {
                                                 </span>
                                             </td>
                                             <td className="num-col font-mono" style={{ color: 'var(--text-tertiary)', fontSize: '0.78rem' }}>
-                                                {low && high ? `$${low} - $${high}` : '--'}
+                                                {low && high ? `${low} - ${high}` : '--'}
+                                            </td>
+                                            <td className="num-col font-mono" style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+                                                {volume}
                                             </td>
                                             <td className="num-col font-mono" style={{ color: 'var(--text-secondary)' }}>
                                                 {mktCap}
+                                            </td>
+                                            <td className="num-col font-mono" style={{ color: 'var(--text-tertiary)', fontSize: '0.8rem' }}>
+                                                {pe}
                                             </td>
                                             <td style={{ textAlign: 'right' }}>
                                                 <button
@@ -177,8 +247,8 @@ function Screener({ onClose, onSelectSymbol }) {
 
                                 {filteredStocks.length === 0 && !loading && (
                                     <tr>
-                                        <td colSpan={7} style={{ textAlign: 'center', padding: '30px', color: 'var(--text-tertiary)' }}>
-                                            No securities matched the current screener criteria or search query.
+                                        <td colSpan={9} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-tertiary)' }}>
+                                            {searchTerm ? 'No securities matched your search term.' : 'No securities returned for this category. Click Retry to reload.'}
                                         </td>
                                     </tr>
                                 )}
