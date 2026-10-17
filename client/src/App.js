@@ -24,7 +24,8 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   ShieldCheck,
-  PieChart
+  PieChart,
+  Newspaper
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -113,6 +114,17 @@ function App() {
     try {
       const res = await axios.get(`${API_URL}/api/paper-portfolio/${uid}`);
       setPaperPortfolio(res.data);
+      if (res.data && res.data.length > 0) {
+        const uniqueSymbols = [...new Set(res.data.map(p => p.symbol))];
+        uniqueSymbols.forEach(async (s) => {
+          try {
+            const pRes = await axios.get(`${API_URL}/api/stock/${s}`);
+            if (pRes.data && pRes.data.values && pRes.data.values.length > 0) {
+              setPortfolioPrices(prev => ({ ...prev, [s]: parseFloat(pRes.data.values[0].close) }));
+            }
+          } catch (_) {}
+        });
+      }
     } catch (e) {}
   };
 
@@ -221,26 +233,37 @@ function App() {
     setSuggestions([]);
     setSymbol(sym.toUpperCase());
     setLoading(true);
-    setData(null);
     setAppError('');
     setAiAnalysis('');
     setActiveTab('markets');
 
     try {
       const [stockRes, newsRes, fundRes] = await Promise.all([
-        axios.get(`${API_URL}/api/stock/${sym}`),
-        axios.get(`${API_URL}/api/news/${sym}`),
-        axios.get(`${API_URL}/api/fundamentals/${sym}`)
+        axios.get(`${API_URL}/api/stock/${encodeURIComponent(sym)}`),
+        axios.get(`${API_URL}/api/news/${encodeURIComponent(sym)}`),
+        axios.get(`${API_URL}/api/fundamentals/${encodeURIComponent(sym)}`)
       ]);
 
-      if (stockRes.data.status === 'error' || !stockRes.data.values || stockRes.data.values.length === 0) {
-        setAppError('Instrument not found or quote limit reached. Check symbol format (e.g., AAPL or RELIANCE.NS).');
+      if (
+        !stockRes.data ||
+        stockRes.data.status === 'error' ||
+        !stockRes.data.values ||
+        stockRes.data.values.length === 0
+      ) {
+        setAppError(`Unable to load market feed for ${sym.toUpperCase()}. Please check ticker or try again.`);
+        setData(null);
       } else {
-        setData({ ...stockRes.data, fundamentals: fundRes.data });
+        const symbolVal = stockRes.data.meta?.symbol || sym.toUpperCase();
+        setData({
+          ...stockRes.data,
+          meta: { ...(stockRes.data.meta || {}), symbol: symbolVal },
+          fundamentals: fundRes.data || {}
+        });
       }
-      setNews(newsRes.data || []);
+      setNews(Array.isArray(newsRes.data) ? newsRes.data : []);
     } catch (e) {
-      setAppError('Market data service error. Please verify the symbol or network connection.');
+      setAppError(`Market data service error for ${sym.toUpperCase()}. Reverting to overview.`);
+      setData(null);
     }
     setLoading(false);
   };
@@ -562,6 +585,18 @@ function App() {
             </button>
 
             <button
+              className={`nav-item ${activeTab === 'news' ? 'active' : ''}`}
+              onClick={() => {
+                setData(null);
+                setActiveTab('news');
+                setIsMobileMenuOpen(false);
+              }}
+            >
+              <Newspaper size={16} className="nav-icon" />
+              <span>News & Market Wire</span>
+            </button>
+
+            <button
               className={`nav-item ${isQuantLabOpen ? 'active' : ''}`}
               onClick={() => {
                 setIsQuantLabOpen(true);
@@ -696,6 +731,9 @@ function App() {
               </div>
               <span>100%</span>
             </a>
+            <div className="creator-credit">
+              Made by Anmol · <a href="https://heyanmol.netlify.app" target="_blank" rel="noreferrer">Portfolio</a>
+            </div>
           </div>
         </aside>
 
@@ -818,7 +856,99 @@ function App() {
             <Screener onClose={() => setActiveTab('overview')} onSelectSymbol={(sym) => fetchStockData(sym)} />
           ) : activeTab === 'academy' ? (
             <Academy onClose={() => setActiveTab('overview')} />
-          ) : data ? (
+          ) : activeTab === 'news' ? (
+            /* ==========================================================================
+               NEWS & MARKET INTELLIGENCE WIRE
+               ========================================================================== */
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+                <div>
+                  <h1 style={{ fontSize: '1.25rem', fontWeight: '700', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Newspaper size={20} color="var(--accent)" />
+                    Global Financial News & Intelligence Wire
+                  </h1>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                    Real-time market journalism, CNBC briefings, and macro event telemetry
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className="term-badge neutral">
+                    <span className="status-dot"></span> Live Wire ({briefing.length} Feeds)
+                  </span>
+                </div>
+              </div>
+
+              {/* Structured Directional Catalyst Synthesis Box */}
+              {(() => {
+                if (!briefingPredictions) return null;
+                const higher = Array.isArray(briefingPredictions.higher) ? briefingPredictions.higher.filter(h => h && h.symbol) : [];
+                const lower = Array.isArray(briefingPredictions.lower) ? briefingPredictions.lower.filter(l => l && l.symbol) : [];
+                if (higher.length === 0 && lower.length === 0) return null;
+
+                return (
+                  <div className="quant-synthesis-box">
+                    <div className="quant-synthesis-header">
+                      <Cpu size={14} color="var(--accent)" />
+                      <span>Quantitative Directional Catalysts (Extracted from Live Wire)</span>
+                    </div>
+                    <div className="quant-catalyst-grid">
+                      {higher.length > 0 && (
+                        <div className="catalyst-col">
+                          <span className="catalyst-col-title pos">▲ Bullish Biases & Catalysts</span>
+                          <div className="catalyst-items">
+                            {higher.map((h, idx) => (
+                              <div key={idx} className="catalyst-item" onClick={() => fetchStockData(h.symbol)}>
+                                <span className="font-mono catalyst-sym pos">{h.symbol}</span>
+                                <span className="catalyst-reason">{h.reason}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {lower.length > 0 && (
+                        <div className="catalyst-col">
+                          <span className="catalyst-col-title neg">▼ Bearish Headwinds & Risks</span>
+                          <div className="catalyst-items">
+                            {lower.map((l, idx) => (
+                              <div key={idx} className="catalyst-item" onClick={() => fetchStockData(l.symbol)}>
+                                <span className="font-mono catalyst-sym neg">{l.symbol}</span>
+                                <span className="catalyst-reason">{l.reason}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* News Articles Grid */}
+              <div className="news-feed-grid">
+                {briefing.map((n, i) => (
+                  <div
+                    key={i}
+                    className="news-article-card"
+                    onClick={() => window.open(n.url, '_blank')}
+                  >
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <span className="news-source-badge">{n.source?.name || 'CNBC Wire'}</span>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                          {n.publishedAt ? new Date(n.publishedAt).toLocaleDateString() : 'Today'}
+                        </span>
+                      </div>
+                      <h4 className="news-article-title">{n.title}</h4>
+                    </div>
+                    <div className="news-article-footer">
+                      <span style={{ fontSize: '0.72rem', color: 'var(--accent)' }}>Read full article ↗</span>
+                      <span className="term-badge neutral font-mono">Macro</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (data && data.values && data.values.length > 0) ? (
             /* ==========================================================================
                MARKETS: Stock Analysis & Candlestick Workspace
                ========================================================================== */
@@ -829,7 +959,7 @@ function App() {
                   <span>Back to Overview</span>
                 </button>
                 <span className="term-badge neutral">
-                  Market Feed: {data.meta.symbol}
+                  Market Feed: {data?.meta?.symbol || symbol}
                 </span>
               </div>
 
@@ -838,19 +968,20 @@ function App() {
                 <div className="stock-view-header">
                   <div>
                     <div className="stock-symbol-large">
-                      <span>{data.meta.symbol}</span>
+                      <span>{data?.meta?.symbol || symbol}</span>
                       <span className="stock-price-large font-mono">
-                        {currencySymbol}{parseFloat(data.values[0].close).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {currencySymbol}{parseFloat(data?.values?.[0]?.close || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                     </div>
                     <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                      Last Updated: {data.values[0].datetime}
+                      Last Updated: {data?.values?.[0]?.datetime || 'Live'}
                     </span>
                   </div>
 
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                     {(() => {
-                      const isWatching = watchlist.some(item => item.symbol === data.meta.symbol);
+                      const curSym = data?.meta?.symbol || symbol;
+                      const isWatching = watchlist.some(item => item.symbol === curSym);
                       return (
                         <button
                           onClick={() => handleProtectedAction('WATCH')}
@@ -872,7 +1003,7 @@ function App() {
                     <button onClick={() => handleProtectedAction('BUY')} className="btn btn-primary">
                       <span>Paper Buy</span>
                     </button>
-                    {paperPortfolio.some(p => p.symbol === data.meta.symbol) && (
+                    {paperPortfolio.some(p => p.symbol === (data?.meta?.symbol || symbol)) && (
                       <button onClick={() => handleProtectedAction('SELL')} className="btn btn-danger">
                         <span>Paper Sell</span>
                       </button>
@@ -898,7 +1029,7 @@ function App() {
                       {verdict.label}
                     </span>
                   </div>
-                  {data.fundamentals?.profile?.marketCapitalization && (
+                  {data?.fundamentals?.profile?.marketCapitalization && (
                     <div className="stock-stat-box">
                       <span className="stock-stat-label">Market Cap</span>
                       <span className="stock-stat-val font-mono">
@@ -906,7 +1037,7 @@ function App() {
                       </span>
                     </div>
                   )}
-                  {data.fundamentals?.metrics?.['peBasicExclExtraTTM'] && (
+                  {data?.fundamentals?.metrics?.['peBasicExclExtraTTM'] && (
                     <div className="stock-stat-box">
                       <span className="stock-stat-label">P/E Ratio</span>
                       <span className="stock-stat-val font-mono">
@@ -914,11 +1045,11 @@ function App() {
                       </span>
                     </div>
                   )}
-                  {data.fundamentals?.metrics?.['52WeekHigh'] && (
+                  {data?.fundamentals?.metrics?.['52WeekHigh'] && (
                     <div className="stock-stat-box">
                       <span className="stock-stat-label">52W Range</span>
                       <span className="stock-stat-val font-mono" style={{ fontSize: '0.85rem' }}>
-                        {currencySymbol}{data.fundamentals.metrics['52WeekLow'].toFixed(1)} - {currencySymbol}{data.fundamentals.metrics['52WeekHigh'].toFixed(1)}
+                        {currencySymbol}{data.fundamentals.metrics['52WeekLow']?.toFixed(1)} - {currencySymbol}{data.fundamentals.metrics['52WeekHigh']?.toFixed(1)}
                       </span>
                     </div>
                   )}
@@ -940,7 +1071,7 @@ function App() {
                     </button>
                   </div>
                   <p className="analyst-body">
-                    {aiAnalysis || 'Execute synthesis to generate a 3-point technical and sentiment verdict for ' + data.meta.symbol + ' based on live order momentum and news filings.'}
+                    {aiAnalysis || 'Execute synthesis to generate a 3-point technical and sentiment verdict for ' + (data?.meta?.symbol || symbol) + ' based on live order momentum and news filings.'}
                   </p>
                 </div>
 
@@ -952,7 +1083,7 @@ function App() {
               <div className="terminal-panel" style={{ marginTop: '16px' }}>
                 <div className="panel-header">
                   <h3 className="panel-title">
-                    News Intelligence & Filings: {data.meta.symbol}
+                    News Intelligence & Filings: {data?.meta?.symbol || symbol}
                   </h3>
                   <span className="term-badge neutral">{news.length} Reports</span>
                 </div>
@@ -1154,39 +1285,32 @@ function App() {
                       <ShieldCheck size={18} color="var(--accent)" />
                       Risk Analytics
                     </h2>
-                    <span className="panel-subtitle">Tail risk & quantitative metrics</span>
+                    <span className="panel-subtitle">Risk metrics for your holdings</span>
                   </div>
-                  <span className="term-badge neutral font-mono">C++20</span>
+                  <span className="term-badge neutral">Simulation required</span>
                 </div>
 
                 <div className="risk-metrics-stack">
                   <div className="risk-metric-row">
-                    <span className="risk-metric-title">Engine Core</span>
-                    <span className="risk-metric-data font-mono">{navigator.hardwareConcurrency || 8} Threads Active</span>
+                    <span className="risk-metric-title">Portfolio positions</span>
+                    <span className="risk-metric-data font-mono">{portfolio.length}</span>
                   </div>
                   <div className="risk-metric-row">
-                    <span className="risk-metric-title">Value at Risk (95% VaR)</span>
-                    <span className="risk-metric-data font-mono" style={{ color: 'var(--danger)' }}>
-                      {portfolio.length > 0 ? '$' + (totalPortfolioValue * 0.082).toFixed(2) : '0.00%'}
-                    </span>
+                    <span className="risk-metric-title">Value at Risk (VaR)</span>
+                    <span className="risk-metric-data">Available after simulation</span>
                   </div>
                   <div className="risk-metric-row">
                     <span className="risk-metric-title">Expected Shortfall (CVaR)</span>
-                    <span className="risk-metric-data font-mono" style={{ color: 'var(--danger)' }}>
-                      {portfolio.length > 0 ? '$' + (totalPortfolioValue * 0.114).toFixed(2) : '0.00%'}
-                    </span>
-                  </div>
-                  <div className="risk-metric-row">
-                    <span className="risk-metric-title">Estimated Portfolio Beta</span>
-                    <span className="risk-metric-data font-mono">1.04</span>
-                  </div>
-                  <div className="risk-metric-row">
-                    <span className="risk-metric-title">Sharpe Ratio Benchmark</span>
-                    <span className="risk-metric-data font-mono" style={{ color: 'var(--accent)' }}>1.68</span>
+                    <span className="risk-metric-data">Available after simulation</span>
                   </div>
                 </div>
 
                 <div style={{ marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
+                  <p style={{ margin: '0 0 12px', color: 'var(--text-secondary)', fontSize: '0.78rem', lineHeight: 1.5 }}>
+                    {portfolio.length > 0
+                      ? 'Run a Quant Lab simulation to estimate risk for your current holdings.'
+                      : 'Add holdings to your portfolio before running an account-specific risk simulation.'}
+                  </p>
                   <button
                     onClick={() => setIsQuantLabOpen(true)}
                     className="btn btn-primary"
@@ -1321,18 +1445,19 @@ function App() {
                             <td className="num-col font-mono">{p.qty}</td>
                             <td className="num-col font-mono">${parseFloat(p.price).toFixed(2)}</td>
                             <td style={{ textAlign: 'right' }}>
-                              <button
+                                <button
                                 className="btn btn-danger btn-sm"
                                 onClick={async () => {
+                                  const closePrice = portfolioPrices[p.symbol] || parseFloat(p.price);
                                   await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
                                     userId: user.uid,
                                     symbol: p.symbol,
                                     qty: p.qty,
-                                    price: p.price
+                                    price: closePrice
                                   });
                                   fetchPaperPortfolio(user.uid);
                                   fetchVirtualBalance(user.uid);
-                                  showToast(`Closed ${p.symbol} position`);
+                                  showToast(`Closed ${p.symbol} position at $${closePrice.toFixed(2)}`);
                                 }}
                               >
                                 Close

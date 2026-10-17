@@ -7,7 +7,6 @@ import {
   ShieldAlert,
   PieChart,
   Activity,
-  Gauge,
   Sliders,
   Layers,
   ArrowRight,
@@ -94,19 +93,14 @@ function simulateClientSide({ symbols, weights, numSimulations, timeHorizonDays,
   endingValues.sort();
   const var95 = Math.max(0, initialPortfolioValue - endingValues[Math.floor(M * 0.05)]);
   const var99 = Math.max(0, initialPortfolioValue - endingValues[Math.floor(M * 0.01)]);
-  const cvar95 = var95 * 1.15;
-  const cvar99 = var99 * 1.13;
 
   let meanDD = 0;
   for (let i = 0; i < M; i++) meanDD += maxDrawdowns[i];
   meanDD = (meanDD / M) * 100;
 
-  const frontierCurve = [];
-  for (let f = 0; f < 30; f++) {
-    const vol = 0.12 + f * 0.012;
-    const ret = 0.04 + Math.sqrt(f) * 0.05;
-    frontierCurve.push({ volatility: vol, expectedReturn: ret, sharpe: (ret - riskFreeRate) / vol });
-  }
+  const expectedReturn = weights.reduce((sum, weight, i) => sum + weight * expReturns[i], 0);
+  const portfolioVariance = weights.reduce((sum, weight, i) => sum + (weight * vols[i]) ** 2, 0);
+  const volatility = Math.sqrt(portfolioVariance);
 
   const t1 = performance.now();
   const execTimeMs = t1 - t0;
@@ -116,10 +110,10 @@ function simulateClientSide({ symbols, weights, numSimulations, timeHorizonDays,
     success: true,
     engineMode: 'local',
     cpp: {
-      engine: `Local Device Hardware (${navigator.hardwareConcurrency || 8} Threads Detected)`,
+      engine: 'Local JavaScript Monte Carlo',
       benchmark: {
         executionTimeMs: execTimeMs,
-        numThreads: navigator.hardwareConcurrency || 8,
+        numThreads: 1,
         simulations: M,
         timeHorizonDays: T,
         totalSimulatedSteps: totalSteps,
@@ -127,50 +121,29 @@ function simulateClientSide({ symbols, weights, numSimulations, timeHorizonDays,
       },
       portfolio: {
         initialValue: initialPortfolioValue,
-        expectedReturn: 0.16,
-        volatility: 0.22,
-        sharpeRatio: Number(((0.16 - riskFreeRate) / 0.22).toFixed(2))
+        expectedReturn,
+        volatility,
+        sharpeRatio: volatility > 0 ? Number(((expectedReturn - riskFreeRate) / volatility).toFixed(2)) : 0
       },
       risk: {
         var95_dollar: var95,
         var95_percent: (var95 / initialPortfolioValue) * 100,
         var99_dollar: var99,
         var99_percent: (var99 / initialPortfolioValue) * 100,
-        cvar95_dollar: cvar95,
-        cvar95_percent: (cvar95 / initialPortfolioValue) * 100,
-        cvar99_dollar: cvar99,
-        cvar99_percent: (cvar99 / initialPortfolioValue) * 100,
+        cvar95_dollar: null,
+        cvar95_percent: null,
+        cvar99_dollar: null,
+        cvar99_percent: null,
         maxDrawdownMean: meanDD,
-        maxDrawdownWorst99: meanDD * 1.8
+        maxDrawdownWorst99: null
       },
       snapshotDays: snapshotIndices,
       trajectories: { p5, p25, p50, p75, p95 },
       samplePaths: samplePaths.map(p => Array.from(p)),
-      histogram: {
-        bins: Array.from({ length: 20 }, (_, i) => endingValues[0] + (i * (endingValues[M - 1] - endingValues[0])) / 20),
-        counts: Array.from({ length: 20 }, () => Math.round(M / 20))
-      },
-      efficientFrontier: {
-        maxSharpe: {
-          volatility: 0.18,
-          expectedReturn: 0.22,
-          sharpe: Number(((0.22 - riskFreeRate) / 0.18).toFixed(2)),
-          weights: weights.map((_, i) => (i === 0 ? 0.40 : i === 1 ? 0.35 : 0.25 / Math.max(1, n - 2)))
-        },
-        minVol: {
-          volatility: 0.12,
-          expectedReturn: 0.08,
-          sharpe: Number(((0.08 - riskFreeRate) / 0.12).toFixed(2)),
-          weights: Array(n).fill(1 / n)
-        },
-        curve: frontierCurve
-      }
-    },
-    jsBenchmark: {
-      executionTimeMs: execTimeMs * 1.4,
-      engine: 'Client JavaScript Thread'
-    },
-    speedupFactor: 1.4
+      histogram: null,
+      efficientFrontier: null,
+      methodology: 'Local estimates use independent asset shocks; correlation, CVaR, histogram and efficient-frontier optimization are unavailable in local mode.'
+    }
   };
 }
 
@@ -189,6 +162,8 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+  const weightTotal = weights.reduce((sum, value) => sum + (Number(value) || 0), 0);
+  const weightsValid = symbols.length > 0 && weights.length === symbols.length && weights.every(w => Number.isFinite(w) && w >= 0 && w <= 1) && Math.abs(weightTotal - 1) <= 0.0001;
   const [activeTab, setActiveTab] = useState('trajectories'); // 'trajectories' | 'frontier' | 'distribution'
 
   const canvasRef = useRef(null);
@@ -205,12 +180,17 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
 
   const runSimulation = useCallback(async (forcedMode = null) => {
     const activeMode = forcedMode || engineMode;
+    const sum = weights.reduce((a, b) => a + b, 0);
+    if (!symbols.length || symbols.length > 50 || weights.length !== symbols.length || weights.some(w => !Number.isFinite(w) || w < 0 || w > 1) || Math.abs(sum - 1) > 0.0001) {
+      setError('Asset weights must total exactly 100% (within 0.01%). Adjust the allocations or use Normalize.');
+      setResult(null);
+      return;
+    }
     setLoading(true);
     setError('');
     setFallbackNote('');
 
-    const sum = weights.reduce((a, b) => a + b, 0);
-    const normalizedWeights = sum > 0 ? weights.map(w => w / sum) : symbols.map(() => 1 / symbols.length);
+    const normalizedWeights = weights;
 
     if (activeMode === 'local') {
       try {
@@ -261,7 +241,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
           selectedPreset
         });
         setResult(fallbackRes);
-        setFallbackNote('☁️ Cloud server is sleeping or cold-starting. Seamlessly executed on your local device hardware!');
+        setFallbackNote('The cloud engine did not respond. Results were calculated locally; see the model limitations below.');
       } catch (clientErr) {
         setError(err.response?.data?.error || 'Simulation failed. Check parameters.');
       }
@@ -309,7 +289,9 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
   const normalizeWeights = () => {
     const sum = weights.reduce((a, b) => a + b, 0);
     if (sum > 0) {
-      setWeights(weights.map(w => Number((w / sum).toFixed(4))));
+      const normalized = weights.map(w => Number((w / sum).toFixed(4)));
+      normalized[normalized.length - 1] = Number((1 - normalized.slice(0, -1).reduce((a, b) => a + b, 0)).toFixed(4));
+      setWeights(normalized);
     }
   };
 
@@ -696,7 +678,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
             {/* Asset Allocation Sliders */}
             <div className="panel-section-title" style={{ marginTop: '20px' }}>
               <PieChart size={16} />
-              <span>Asset Allocation Weights</span>
+              <span>Asset Allocation Weights ({(weightTotal * 100).toFixed(1)}%)</span>
               <button className="btn-normalize" onClick={normalizeWeights} title="Normalize to 100%">
                 Normalize
               </button>
@@ -721,6 +703,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                 </div>
               ))}
             </div>
+            {!weightsValid && <div className="quant-error-banner" role="alert">Weights must total 100%. Current total: {(weightTotal * 100).toFixed(1)}%.</div>}
 
             {/* Simulation Parameters */}
             <div className="panel-section-title" style={{ marginTop: '20px' }}>
@@ -782,7 +765,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
             <button
               className="btn-run-sim"
               onClick={() => runSimulation()}
-              disabled={loading}
+              disabled={loading || !weightsValid}
             >
               {loading ? (
                 <div className="mini-spinner-quant"></div>
@@ -798,64 +781,53 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
           {/* Right Column: Visualizations & Analytics */}
           <div className="quant-results-panel">
             {error && (
-              <div className="quant-error-banner">
+              <div className="quant-error-banner" role="alert">
                 <ShieldAlert size={18} />
                 <span>{error}</span>
               </div>
             )}
 
             {fallbackNote && (
-              <div className="quant-fallback-banner">
-                <Zap size={16} color="#f59e0b" />
+              <div className="quant-fallback-banner" role="status">
                 <span>{fallbackNote}</span>
               </div>
             )}
 
-            {/* PERFORMANCE BENCHMARK STANDOUT CARD */}
+            {/* Simulation diagnostics */}
             {result && result.cpp && (
               <div className="benchmark-card">
                 <div className="benchmark-header">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Gauge size={20} color="#69D39A" />
-                    <span style={{ fontWeight: '700', fontSize: '0.95rem' }}>
-                      {engineMode === 'local' ? 'Local Device Hardware Engine' : 'C++ Core vs Node.js V8 Engine Benchmark'}
-                    </span>
+                    <span className="simulation-summary-title">Simulation details</span>
                   </div>
-                  <span className="speedup-badge font-mono">
-                    ⚡ {engineMode === 'local' ? `${result.cpp.benchmark.numThreads} THREADS ACTIVE` : `${result.speedupFactor}x FASTER IN C++`}
-                  </span>
+                  <span className="engine-status">{result.engineMode === 'cloud' ? 'Cloud engine' : 'Local estimate'}</span>
                 </div>
 
                 <div className="benchmark-metrics-grid">
-                  <div className="benchmark-metric-box cpp-box">
-                    <span className="metric-label">C++20 OpenMP Engine</span>
+                  <div className="benchmark-metric-box">
+                    <span className="metric-label">Engine runtime</span>
                     <span className="metric-value font-mono">
                       {result.cpp.benchmark.executionTimeMs.toFixed(1)} ms
                     </span>
                     <span className="metric-sub font-mono">
-                      {result.cpp.benchmark.numThreads} Threads · {(result.cpp.benchmark.throughputStepsPerSec / 1e6).toFixed(1)}M steps/sec
+                      {result.cpp.benchmark.numThreads} compute thread(s)
                     </span>
                   </div>
 
-                  <div className="benchmark-metric-box js-box">
-                    <span className="metric-label">V8 JavaScript Engine</span>
-                    <span className="metric-value font-mono">
-                      {result.jsBenchmark.executionTimeMs.toFixed(1)} ms
-                    </span>
-                    <span className="metric-sub">
-                      Single-threaded · High GC overhead
-                    </span>
+                  <div className="benchmark-metric-box">
+                    <span className="metric-label">Simulated paths</span>
+                    <span className="metric-value font-mono">{result.cpp.benchmark.simulations.toLocaleString()}</span>
                   </div>
-
-                  <div className="benchmark-metric-box arch-box">
-                    <span className="metric-label">Quant Systems Architecture</span>
-                    <div className="arch-pill-row">
-                      <span className="arch-chip">SIMD Vectorized</span>
-                      <span className="arch-chip">Cholesky Correlation</span>
-                      <span className="arch-chip">Zero GC Pauses</span>
-                    </div>
+                  <div className="benchmark-metric-box">
+                    <span className="metric-label">Time horizon</span>
+                    <span className="metric-value font-mono">{result.cpp.benchmark.timeHorizonDays} trading days</span>
                   </div>
                 </div>
+                <p className="simulation-method-note">
+                  {result.engineMode === 'cloud'
+                    ? 'Cloud results use correlated asset shocks. Risk figures are model estimates, not guarantees.'
+                    : 'Local results assume independent asset shocks. Efficient frontier and CVaR are unavailable in this mode.'}
+                </p>
               </div>
             )}
 
@@ -895,31 +867,35 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                     className="quant-canvas"
                   />
                   <div className="canvas-legend">
-                    <span className="legend-item"><span className="color-dot bull"></span> 95th Percentile (Bull Case)</span>
-                    <span className="legend-item"><span className="color-dot median"></span> 50th Percentile (Median)</span>
-                    <span className="legend-item"><span className="color-dot bear"></span> 5th Percentile (Bear Case)</span>
-                    <span className="legend-item"><span className="color-dot init"></span> Initial Capital</span>
+                    <span className="legend-item"><span className="color-dot bull"></span><span>95th percentile</span></span>
+                    <span className="legend-item"><span className="color-dot median"></span><span>Median</span></span>
+                    <span className="legend-item"><span className="color-dot bear"></span><span>5th percentile</span></span>
+                    <span className="legend-item"><span className="color-dot init"></span><span>Starting value</span></span>
                   </div>
                 </div>
               )}
 
               {activeTab === 'frontier' && (
                 <div style={{ position: 'relative' }}>
-                  <canvas
+                  {!result?.cpp?.efficientFrontier ? <div className="quant-empty-state" role="status">
+                    <Target size={20} />
+                    <strong>Efficient frontier unavailable</strong>
+                    <span>Switch to the cloud engine to view correlated portfolio optimization results.</span>
+                  </div> : <canvas
                     ref={frontierCanvasRef}
                     width={720}
                     height={340}
                     className="quant-canvas"
-                  />
-                  <div className="canvas-legend">
-                    <span className="legend-item"><span className="color-dot gold"></span> Max Sharpe Portfolio (Tangency)</span>
-                    <span className="legend-item"><span className="color-dot cyan"></span> Minimum Volatility Portfolio</span>
-                    <span className="legend-item"><span className="color-dot red"></span> Current Allocation</span>
-                  </div>
+                  />}
+                  {result?.cpp?.efficientFrontier && <div className="canvas-legend">
+                    <span className="legend-item"><span className="color-dot gold"></span><span>Highest Sharpe ratio</span></span>
+                    <span className="legend-item"><span className="color-dot cyan"></span><span>Lowest volatility</span></span>
+                    <span className="legend-item"><span className="color-dot red"></span><span>Current portfolio</span></span>
+                  </div>}
                 </div>
               )}
 
-              {activeTab === 'distribution' && result && result.cpp && (
+              {activeTab === 'distribution' && result && result.cpp && result.cpp.histogram && (
                 <div className="histogram-container">
                   <div style={{ marginBottom: '12px', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                     Probability Density of Ending Portfolio Value at Day {timeHorizonDays} ({numSimulations.toLocaleString()} simulations):
@@ -947,6 +923,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                   </div>
                 </div>
               )}
+              {activeTab === 'distribution' && result && !result.cpp.histogram && <div className="quant-fallback-banner">Terminal distribution chart is unavailable in local mode.</div>}
             </div>
 
             {/* INSTITUTIONAL RISK METRICS GRID */}
@@ -958,11 +935,11 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                     ${Math.round(result.cpp.risk.var95_dollar).toLocaleString()}
                   </span>
                   <span className="risk-sub">
-                    {result.cpp.risk.var95_percent.toFixed(1)}% max 95% confidence loss
+                    {result.cpp.risk.var95_percent.toFixed(1)}% simulated loss threshold at the 95th percentile
                   </span>
                 </div>
 
-                <div className="risk-card">
+                {result.cpp.risk.cvar95_dollar != null && <div className="risk-card">
                   <span className="risk-title">Conditional VaR (CVaR 95%)</span>
                   <span className="risk-value font-mono danger">
                     ${Math.round(result.cpp.risk.cvar95_dollar).toLocaleString()}
@@ -970,7 +947,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                   <span className="risk-sub">
                     Expected loss in worst 5% tail
                   </span>
-                </div>
+                </div>}
 
                 <div className="risk-card">
                   <span className="risk-title">Mean Max Drawdown</span>
@@ -978,7 +955,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                     {result.cpp.risk.maxDrawdownMean.toFixed(1)}%
                   </span>
                   <span className="risk-sub">
-                    Worst 99%: {result.cpp.risk.maxDrawdownWorst99.toFixed(1)}%
+                    {result.cpp.risk.maxDrawdownWorst99 == null ? 'Tail drawdown estimate unavailable' : `Worst 99%: ${result.cpp.risk.maxDrawdownWorst99.toFixed(1)}%`}
                   </span>
                 </div>
 
@@ -988,7 +965,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                     {result.cpp.portfolio.sharpeRatio.toFixed(2)}
                   </span>
                   <span className="risk-sub">
-                    Max Optimal: {result.cpp.efficientFrontier.maxSharpe.sharpe.toFixed(2)}
+                    {result.cpp.efficientFrontier ? `Optimized: ${result.cpp.efficientFrontier.maxSharpe.sharpe.toFixed(2)}` : 'Optimization unavailable locally'}
                   </span>
                 </div>
               </div>

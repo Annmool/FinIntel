@@ -380,6 +380,22 @@ button {
   font-family: var(--font-mono);
 }
 
+.creator-credit {
+  color: var(--text-tertiary);
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.creator-credit a {
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.creator-credit a:hover {
+  color: var(--text-primary);
+}
+
 .status-dot {
   width: 6px;
   height: 6px;
@@ -653,6 +669,44 @@ button {
   overflow-x: auto;
 }
 
+.screener-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--danger-border);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: var(--danger-bg);
+  color: var(--text-secondary);
+}
+
+.screener-error > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.screener-error strong {
+  color: var(--danger);
+  font-size: 0.84rem;
+}
+
+.screener-error span {
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+@media (max-width: 540px) {
+  .screener-error {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .terminal-table {
   width: 100%;
   border-collapse: collapse;
@@ -869,9 +923,15 @@ button {
 }
 
 .ticker-move {
-  display: inline-flex;
+  display: flex;
+  width: max-content;
   white-space: nowrap;
-  animation: ticker-scroll 45s linear infinite;
+  animation: ticker-scroll 180s linear infinite;
+}
+
+.ticker-group {
+  display: flex;
+  flex: 0 0 auto;
 }
 
 .ticker-move:hover {
@@ -1123,7 +1183,25 @@ button {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-bottom: 10px;
+}
+
+.simulation-summary-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.engine-status {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .benchmark-metrics-grid {
@@ -1140,12 +1218,41 @@ button {
   display: flex;
   flex-direction: column;
 }
-.benchmark-metric-box.cpp-box { border-left: 3px solid var(--accent); }
-.benchmark-metric-box.js-box { border-left: 3px solid var(--warning); }
-.benchmark-metric-box.arch-box { border-left: 3px solid var(--info); }
+
+.simulation-method-note {
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
+.quant-error-banner,
+.quant-fallback-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.quant-error-banner {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.quant-fallback-banner {
+  color: var(--text-secondary);
+  background: var(--bg-surface-subtle);
+}
 
 .quant-tab-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   border-bottom: 1px solid var(--border-primary);
   padding-bottom: 6px;
@@ -1180,6 +1287,64 @@ button {
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-sm);
   padding: 14px;
+}
+
+.canvas-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr));
+  gap: 10px 16px;
+  margin-top: 12px;
+  padding: 12px 4px 2px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.color-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.color-dot.bull { background: #4ade80; }
+.color-dot.median { background: var(--accent); }
+.color-dot.bear { background: #f87171; }
+.color-dot.init { background: #e5ece7; }
+.color-dot.gold { background: #fbbf24; }
+.color-dot.cyan { background: #60a5fa; }
+.color-dot.red { background: #f87171; }
+
+.quant-empty-state {
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.quant-empty-state strong {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.quant-empty-state span {
+  max-width: 420px;
+  font-size: 0.8rem;
+  line-height: 1.5;
 }
 
 .risk-metrics-row {
