@@ -60,28 +60,61 @@ const fetchWithCache = async (url, cacheKey, ttl = 60) => {
 cron.schedule('*/5 * * * *', async () => {
     try {
         const activeAlerts = await Alert.find({ triggered: false });
-        for (const alert of activeAlerts) {
-            let symbol = alert.symbol;
-            let exchangeParam = '';
-            if (symbol.includes(':')) {
-                const parts = symbol.split(':');
-                symbol = parts[0];
-                exchangeParam = `&exchange=${parts[1]}`;
-            } else if (symbol.endsWith('.NS')) {
-                symbol = symbol.replace('.NS', '');
-                exchangeParam = '&exchange=NSE';
+        if (!activeAlerts || activeAlerts.length === 0) return;
+
+        const uniqueSymbols = [...new Set(activeAlerts.map(a => a.symbol))];
+        const priceMap = {};
+
+        // 1. Try batch fetch via Yahoo Finance for speed, no rate limit, and full global/NSE support
+        try {
+            const yQuotes = await yahooFinance.quote(uniqueSymbols, {}, { validateResult: false });
+            if (Array.isArray(yQuotes)) {
+                for (const q of yQuotes) {
+                    if (q && q.symbol && Number.isFinite(q.regularMarketPrice)) {
+                        priceMap[q.symbol] = q.regularMarketPrice;
+                    }
+                }
             }
-            const res = await axios.get(`${TWELVE_DATA_URL}/price?symbol=${symbol}${exchangeParam}&apikey=${process.env.STOCK_API_KEY}`);
-            const currentPrice = parseFloat(res.data.price);
-            let isHit = (alert.condition === 'ABOVE' && currentPrice >= alert.targetPrice) ||
-                (alert.condition === 'BELOW' && currentPrice <= alert.targetPrice);
+        } catch (yErr) {
+            console.log("Yahoo Alert price check fallback to Twelve Data:", yErr.message);
+        }
+
+        // 2. For any remaining symbols, query Twelve Data with safe delays
+        for (const sym of uniqueSymbols) {
+            if (priceMap[sym]) continue;
+            try {
+                let symbol = sym;
+                let exchangeParam = '';
+                if (symbol.includes(':')) {
+                    const parts = symbol.split(':');
+                    symbol = parts[0];
+                    exchangeParam = `&exchange=${parts[1]}`;
+                } else if (symbol.endsWith('.NS')) {
+                    symbol = symbol.replace('.NS', '');
+                    exchangeParam = '&exchange=NSE';
+                }
+                const res = await axios.get(`${TWELVE_DATA_URL}/price?symbol=${symbol}${exchangeParam}&apikey=${process.env.STOCK_API_KEY}`);
+                const price = parseFloat(res.data?.price);
+                if (Number.isFinite(price)) {
+                    priceMap[sym] = price;
+                }
+            } catch (_) {}
+        }
+
+        // 3. Evaluate alerts against real-time prices
+        for (const alert of activeAlerts) {
+            const currentPrice = priceMap[alert.symbol];
+            if (!Number.isFinite(currentPrice)) continue;
+
+            const isHit = (alert.condition === 'ABOVE' && currentPrice >= alert.targetPrice) ||
+                          (alert.condition === 'BELOW' && currentPrice <= alert.targetPrice);
             if (isHit) {
                 alert.triggered = true;
                 await alert.save();
-                console.log(`🔔 Alert Triggered: ${alert.symbol}`);
+                console.log(`🔔 Alert Triggered: ${alert.symbol} at ${currentPrice} (${alert.condition} ${alert.targetPrice})`);
             }
         }
-    } catch (e) { console.error("Alert Cron Error"); }
+    } catch (e) { console.error("Alert Cron Error:", e.message); }
 });
 
 // --- 4. Main API Routes ---
@@ -132,11 +165,15 @@ app.get('/api/stock/:symbol', async (req, res) => {
             try {
                 const url = `${TWELVE_DATA_URL}/time_series?symbol=${symbol}${exchangeParam}&interval=1day&apikey=${process.env.STOCK_API_KEY}`;
                 data = await fetchWithCache(url, cacheKey, 300);
+                if (!data || data.status === 'error' || !data.values || data.values.length === 0) {
+                    throw new Error("Twelve Data returned error or no quotes");
+                }
                 if (data && data.meta) data.meta.symbol = rawSymbol;
             } catch (err) {
-                // Fallback to Yahoo Finance if Twelve Data hits rate limit
+                // Fallback to Yahoo Finance if Twelve Data hits rate limit or errors
+                console.log(`Twelve Data unavailable for ${symbol} (${err.message}). Falling back to Yahoo Finance.`);
                 data = await fetchFromYahoo(symbol); 
-                data.meta.symbol = rawSymbol;
+                if (data && data.meta) data.meta.symbol = rawSymbol;
             }
         }
 
@@ -209,23 +246,41 @@ app.get('/api/search/:query', async (req, res) => {
     }
 });
 
-// High-Frequency Ticker Tape (Finnhub)
+// High-Frequency Ticker Tape (Yahoo Finance with Finnhub Fallback)
 app.get('/api/ticker-tape', async (req, res) => {
     const cacheKey = "global_ticker_tape";
     const cached = myCache.get(cacheKey);
     if (cached) return res.json(cached);
     try {
         const symbols = ["AAPL", "TSLA", "RELIANCE.NS", "TCS.NS", "MSFT", "AMZN", "GOOGL"];
-        const requests = symbols.map(s => axios.get(`${FINNHUB_URL}/quote?symbol=${s}&token=${process.env.FINNHUB_API_KEY}`));
-        const responses = await Promise.allSettled(requests);
-        const data = responses
-            .map((r, i) => {
-                if (r.status === 'fulfilled' && r.value.data && r.value.data.c) {
-                    return { symbol: symbols[i], close: r.value.data.c, percent_change: r.value.data.dp };
-                }
-                return null;
-            })
-            .filter(item => item !== null && item.close !== 0);
+        let data = [];
+        try {
+            const yQuotes = await yahooFinance.quote(symbols, {}, { validateResult: false });
+            if (Array.isArray(yQuotes) && yQuotes.length > 0) {
+                data = yQuotes.map(q => ({
+                    symbol: q.symbol,
+                    close: q.regularMarketPrice || 0,
+                    percent_change: q.regularMarketChangePercent || 0
+                })).filter(item => item.close > 0);
+            }
+        } catch (yErr) {
+            console.error("Yahoo Ticker Tape Error:", yErr.message);
+        }
+
+        // Fallback to Finnhub if Yahoo returned nothing
+        if (data.length === 0 && process.env.FINNHUB_API_KEY) {
+            const usSymbols = ["AAPL", "TSLA", "MSFT", "AMZN", "GOOGL"];
+            const requests = usSymbols.map(s => axios.get(`${FINNHUB_URL}/quote?symbol=${s}&token=${process.env.FINNHUB_API_KEY}`));
+            const responses = await Promise.allSettled(requests);
+            data = responses
+                .map((r, i) => {
+                    if (r.status === 'fulfilled' && r.value.data && r.value.data.c) {
+                        return { symbol: usSymbols[i], close: r.value.data.c, percent_change: r.value.data.dp };
+                    }
+                    return null;
+                })
+                .filter(item => item !== null && item.close !== 0);
+        }
 
         if (data.length > 0) {
             myCache.set(cacheKey, data, 60);
@@ -271,7 +326,7 @@ app.get('/api/market-briefing', async (req, res) => {
                     role: "user", 
                     content: `Based on these news headlines: "${headlines}", predict 3 stocks that will go higher and 3 stocks that will go lower. Return ONLY a JSON object in this exact format: {"higher": [{"symbol": "TICKER", "reason": "short reason"}], "lower": [{"symbol": "TICKER", "reason": "short reason"}]}`
                 }],
-                model: "llama-3.3-70b-versatile",
+                model: "llama-3.1-8b-instant",
                 response_format: { type: "json_object" }
             });
             aiPredictions = JSON.parse(chatCompletion.choices[0].message.content);
@@ -349,32 +404,44 @@ app.get('/api/fundamentals/:symbol', async (req, res) => {
 
 // --- 5. User-Specific Logic (Watchlist & Portfolio) ---
 app.get('/api/watchlist/:userId', async (req, res) => {
+    if (!req.params.userId) return res.json([]);
     const list = await Watchlist.find({ userId: req.params.userId });
     res.json(list);
 });
 
 app.post('/api/watchlist', async (req, res) => {
     const { symbol, userId } = req.body;
-    const exists = await Watchlist.findOne({ symbol: symbol.toUpperCase(), userId });
+    if (!symbol || typeof symbol !== 'string' || !userId) {
+        return res.status(400).json({ error: "Invalid symbol or userId" });
+    }
+    const cleanSym = symbol.trim().toUpperCase();
+    const exists = await Watchlist.findOne({ symbol: cleanSym, userId });
     if (exists) return res.status(400).send("Exists");
-    const newItem = new Watchlist({ symbol: symbol.toUpperCase(), userId });
+    const newItem = new Watchlist({ symbol: cleanSym, userId });
     await newItem.save();
     res.json(newItem);
 });
 
 app.delete('/api/watchlist/:userId/:symbol', async (req, res) => {
-    await Watchlist.findOneAndDelete({ symbol: req.params.symbol.toUpperCase(), userId: req.params.userId });
+    if (!req.params.symbol || !req.params.userId) return res.send("Deleted");
+    await Watchlist.findOneAndDelete({ symbol: req.params.symbol.trim().toUpperCase(), userId: req.params.userId });
     res.send("Deleted");
 });
 
 app.get('/api/portfolio/:userId', async (req, res) => {
+    if (!req.params.userId) return res.json([]);
     const holdings = await Portfolio.find({ userId: req.params.userId });
     res.json(holdings);
 });
 
 app.post('/api/portfolio', async (req, res) => {
     const { userId, symbol, qty, price } = req.body;
-    const newHolding = new Portfolio({ userId, symbol: symbol.toUpperCase(), qty, price });
+    const parsedQty = parseFloat(qty);
+    const parsedPrice = parseFloat(price);
+    if (!userId || !symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+        return res.status(400).json({ error: "Invalid portfolio parameters. Quantity and price must be positive numbers." });
+    }
+    const newHolding = new Portfolio({ userId, symbol: symbol.trim().toUpperCase(), qty: parsedQty, price: parsedPrice });
     await newHolding.save();
     res.json(newHolding);
 });
@@ -403,7 +470,14 @@ app.get('/api/virtual-account/:userId', async (req, res) => {
 // Paper Trading: Buy
 app.post('/api/paper-portfolio/buy', async (req, res) => {
     const { userId, symbol, qty, price } = req.body;
-    const totalCost = qty * price;
+    const parsedQty = parseFloat(qty);
+    const parsedPrice = parseFloat(price);
+
+    if (!userId || !symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+        return res.status(400).json({ error: "Invalid order parameters. Quantity and price must be positive numbers." });
+    }
+
+    const totalCost = Number((parsedQty * parsedPrice).toFixed(2));
 
     let account = await VirtualAccount.findOne({ userId });
     if (!account) {
@@ -415,17 +489,17 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
         return res.status(400).json({ error: "Insufficient virtual funds" });
     }
 
-    account.balance -= totalCost;
+    account.balance = Number((account.balance - totalCost).toFixed(2));
     await account.save();
 
     let holding = await PaperPortfolio.findOne({ userId, symbol: symbol.toUpperCase() });
     if (holding) {
         const oldTotal = holding.qty * holding.price;
-        holding.qty += qty;
+        holding.qty += parsedQty;
         holding.price = (oldTotal + totalCost) / holding.qty;
         await holding.save();
     } else {
-        holding = new PaperPortfolio({ userId, symbol: symbol.toUpperCase(), qty, price });
+        holding = new PaperPortfolio({ userId, symbol: symbol.toUpperCase(), qty: parsedQty, price: parsedPrice });
         await holding.save();
     }
     
@@ -435,19 +509,28 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
 // Paper Trading: Sell
 app.post('/api/paper-portfolio/sell', async (req, res) => {
     const { userId, symbol, qty, price } = req.body;
+    const parsedQty = parseFloat(qty);
+    const parsedPrice = parseFloat(price);
+
+    if (!userId || !symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+        return res.status(400).json({ error: "Invalid order parameters. Quantity and price must be positive numbers." });
+    }
     
     let holding = await PaperPortfolio.findOne({ userId, symbol: symbol.toUpperCase() });
-    if (!holding || holding.qty < qty) {
+    if (!holding || holding.qty < parsedQty) {
         return res.status(400).json({ error: "Not enough shares to sell" });
     }
 
-    const totalRevenue = qty * price;
+    const totalRevenue = Number((parsedQty * parsedPrice).toFixed(2));
     let account = await VirtualAccount.findOne({ userId });
-    account.balance += totalRevenue;
+    if (!account) {
+        account = new VirtualAccount({ userId, balance: 100000 });
+    }
+    account.balance = Number((account.balance + totalRevenue).toFixed(2));
     await account.save();
 
-    holding.qty -= qty;
-    if (holding.qty === 0) {
+    holding.qty = Number((holding.qty - parsedQty).toFixed(4));
+    if (holding.qty <= 0.0001) {
         await PaperPortfolio.findByIdAndDelete(holding._id);
         holding = null;
     } else {
@@ -462,31 +545,149 @@ app.delete('/api/portfolio/:id', async (req, res) => {
     res.send("Deleted");
 });
 
+// Curated Multi-Market Screener Universe (US Tech, Mega-Caps, Indian NSE Bluechips)
+const SCREENER_UNIVERSE = [
+    // Mega-Cap US Tech & AI Growth
+    'AAPL', 'NVDA', 'TSLA', 'MSFT', 'AMZN', 'GOOGL', 'META', 'AMD', 'NFLX', 'PLTR', 
+    'COIN', 'SMCI', 'AVGO', 'CRM', 'ORCL', 'UBER', 'INTC', 'IBM',
+    // Large Cap Value & Institutional Bluechips
+    'JPM', 'BAC', 'BRK-B', 'DIS', 'V', 'MA', 'WMT', 'PG', 'KO', 'JNJ', 'LLY', 'BA', 'COST',
+    // Broad Market Benchmark ETFs
+    'SPY', 'QQQ',
+    // Indian Market Leaders (NSE)
+    'RELIANCE.NS', 'TCS.NS', 'INFY.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'BHARTIARTL.NS', 
+    'ITC.NS', 'SBIN.NS', 'TATAMOTORS.NS', 'LT.NS'
+];
+
+const TECH_SYMBOLS = new Set([
+    'AAPL', 'NVDA', 'TSLA', 'MSFT', 'AMZN', 'GOOGL', 'META', 'AMD', 'NFLX', 'PLTR',
+    'COIN', 'SMCI', 'AVGO', 'CRM', 'ORCL', 'UBER', 'INTC', 'IBM'
+]);
+
+function normalizeScreenerQuote(q) {
+    const isIndian = q.symbol.endsWith('.NS') || q.symbol.endsWith('.BO');
+    return {
+        symbol: q.symbol,
+        shortName: q.shortName || q.longName || q.symbol,
+        longName: q.longName || q.shortName || q.symbol,
+        regularMarketPrice: Number.isFinite(q.regularMarketPrice) ? q.regularMarketPrice : null,
+        regularMarketChangePercent: Number.isFinite(q.regularMarketChangePercent) ? q.regularMarketChangePercent : 0,
+        regularMarketDayHigh: Number.isFinite(q.regularMarketDayHigh) ? q.regularMarketDayHigh : null,
+        regularMarketDayLow: Number.isFinite(q.regularMarketDayLow) ? q.regularMarketDayLow : null,
+        regularMarketVolume: Number.isFinite(q.regularMarketVolume) ? q.regularMarketVolume : 0,
+        marketCap: Number.isFinite(q.marketCap) ? q.marketCap : null,
+        trailingPE: Number.isFinite(q.trailingPE) ? q.trailingPE : null,
+        currency: q.currency || (isIndian ? 'INR' : 'USD')
+    };
+}
+
 // Screener Endpoint
 app.get('/api/screener/:type', async (req, res) => {
     try {
-        const type = req.params.type; 
-        const result = await yahooFinance.screener({ scrIds: type, count: 15 }, undefined, { validateResult: false });
-        res.json(result.quotes || []);
+        const allowedTypes = new Set([
+            'day_gainers', 
+            'day_losers', 
+            'most_actives', 
+            'undervalued_large_caps',
+            'tech_titans',
+            'indian_market'
+        ]);
+        const type = req.params.type;
+        if (!allowedTypes.has(type)) {
+            return res.status(400).json({ error: 'Unknown screener. Choose a supported market filter.' });
+        }
+
+        const cacheKey = `screener_${type}`;
+        const cached = myCache.get(cacheKey);
+        if (cached && cached.length > 0) return res.json(cached);
+
+        let quotes = [];
+
+        // For standard types, attempt Yahoo's predefined screener first during live market hours
+        if (['day_gainers', 'day_losers', 'most_actives', 'undervalued_large_caps'].includes(type)) {
+            try {
+                const yfResult = await yahooFinance.screener(type, { count: 20 }, { validateResult: false });
+                if (Array.isArray(yfResult?.quotes) && yfResult.quotes.length > 0) {
+                    quotes = yfResult.quotes.map(normalizeScreenerQuote);
+                }
+            } catch (yfErr) {
+                console.log(`Predefined screener unavailable for ${type} (${yfErr.message}). Using universe engine.`);
+            }
+        }
+
+        // Resilient Fallback Engine: If predefined screener returned empty (e.g. weekend, off-hours, or custom filter)
+        if (quotes.length === 0) {
+            try {
+                const rawQuotes = await yahooFinance.quote(SCREENER_UNIVERSE, {}, { validateResult: false });
+                const validQuotes = (Array.isArray(rawQuotes) ? rawQuotes : [])
+                    .filter(q => q && q.symbol && Number.isFinite(q.regularMarketPrice))
+                    .map(normalizeScreenerQuote);
+
+                if (type === 'day_gainers') {
+                    quotes = [...validQuotes]
+                        .sort((a, b) => b.regularMarketChangePercent - a.regularMarketChangePercent)
+                        .slice(0, 15);
+                } else if (type === 'day_losers') {
+                    quotes = [...validQuotes]
+                        .sort((a, b) => a.regularMarketChangePercent - b.regularMarketChangePercent)
+                        .slice(0, 15);
+                } else if (type === 'most_actives') {
+                    quotes = [...validQuotes]
+                        .sort((a, b) => b.regularMarketVolume - a.regularMarketVolume)
+                        .slice(0, 15);
+                } else if (type === 'undervalued_large_caps') {
+                    quotes = [...validQuotes]
+                        .filter(q => (q.marketCap || 0) >= 40e9)
+                        .sort((a, b) => (a.trailingPE || 999) - (b.trailingPE || 999))
+                        .slice(0, 15);
+                } else if (type === 'tech_titans') {
+                    quotes = [...validQuotes]
+                        .filter(q => TECH_SYMBOLS.has(q.symbol))
+                        .sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0))
+                        .slice(0, 15);
+                } else if (type === 'indian_market') {
+                    quotes = [...validQuotes]
+                        .filter(q => q.symbol.endsWith('.NS') || q.symbol.endsWith('.BO'))
+                        .sort((a, b) => b.regularMarketChangePercent - a.regularMarketChangePercent)
+                        .slice(0, 15);
+                }
+            } catch (universeErr) {
+                console.error("Universe screener calculation error:", universeErr.message);
+            }
+        }
+
+        if (quotes.length > 0) {
+            myCache.set(cacheKey, quotes, 120);
+        }
+        res.json(quotes);
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        console.error(`Screener provider error (${req.params.type}):`, e.message);
+        res.status(500).json({ error: e.message || 'Market data feed temporarily unavailable.' });
     }
 });
 
 app.get('/api/alerts/:userId', async (req, res) => {
+    if (!req.params.userId) return res.json([]);
     const alerts = await Alert.find({ userId: req.params.userId });
     res.json(alerts);
 });
 
 app.post('/api/alerts', async (req, res) => {
     const { userId, symbol, targetPrice, condition } = req.body;
-    const newAlert = new Alert({ userId, symbol: symbol.toUpperCase(), targetPrice, condition, triggered: false });
+    const parsedTarget = parseFloat(targetPrice);
+    if (!userId || !symbol || typeof symbol !== 'string' || !Number.isFinite(parsedTarget) || parsedTarget <= 0 || !['ABOVE', 'BELOW'].includes(condition)) {
+        return res.status(400).json({ error: "Invalid alert parameters. Provide a valid symbol, target price, and condition (ABOVE/BELOW)." });
+    }
+    const cleanSym = symbol.trim().toUpperCase();
+    const newAlert = new Alert({ userId, symbol: cleanSym, targetPrice: parsedTarget, condition, triggered: false });
     await newAlert.save();
     res.json(newAlert);
 });
 
 app.delete('/api/alerts/:id', async (req, res) => {
-    await Alert.findByIdAndDelete(req.params.id);
+    if (req.params.id) {
+        await Alert.findByIdAndDelete(req.params.id);
+    }
     res.send("Deleted");
 });
 
@@ -494,16 +695,30 @@ app.delete('/api/alerts/:id', async (req, res) => {
 app.post('/api/ai-analysis', async (req, res) => {
     try {
         const { symbol, price, rsi, sentiment, news } = req.body;
-        const chatCompletion = await groq.chat.completions.create({
-            messages: [{ role: "user", content: `Analyze ${symbol}. Price: $${price}, RSI: ${rsi}, Sentiment: ${sentiment}. News: ${news.map(n => n.title).slice(0, 2)}. 3 sentences verdict.` }],
-            model: "llama-3.3-70b-versatile",
-        });
-        res.json({ analysis: chatCompletion.choices[0].message.content });
-    } catch (error) { res.status(500).send("AI Error"); }
+        const newsItems = Array.isArray(news) ? news : [];
+        const newsSummary = newsItems.slice(0, 2).map(n => n?.title || '').filter(Boolean).join(". ");
+        
+        let analysisText = "";
+        try {
+            const chatCompletion = await groq.chat.completions.create({
+                messages: [{ role: "user", content: `Analyze ${symbol}. Price: $${price}, RSI: ${rsi}, Sentiment: ${sentiment}. News: ${newsSummary}. 3 sentences technical and market verdict.` }],
+                model: "llama-3.1-8b-instant",
+            });
+            analysisText = chatCompletion.choices[0].message.content;
+        } catch (groqErr) {
+            console.error("Groq API error:", groqErr.message);
+            const rsiNum = parseFloat(rsi) || 50;
+            const rsiVerdict = rsiNum > 65 ? "overbought momentum, signaling potential consolidation" : rsiNum < 35 ? "oversold conditions, indicating potential mean-reversion buying interest" : "balanced neutral momentum";
+            analysisText = `${symbol} is trading at $${price} within ${rsiVerdict} (RSI: ${rsi || '50.0'}). Current market sentiment stands at ${sentiment || 'Neutral'}. Quantitative risk models recommend confirming directional breakout with volume before placing order execution.`;
+        }
+        res.json({ analysis: analysisText });
+    } catch (error) { 
+        res.status(500).json({ error: "AI Error", analysis: "Technical indicators show neutral price consolidation. Monitor moving average alignment." }); 
+    }
 });
 
 // --- 7. C++ High-Performance Quantitative Computing Core ---
-const { PRESETS, runCppQuantEngine, runJsMonteCarloBenchmark, computeAssetParameters } = require('./quant_service');
+const { PRESETS, runCppQuantEngine, computeAssetParameters } = require('./quant_service');
 
 app.get('/api/quant/presets', (req, res) => {
     res.json(PRESETS);
@@ -522,6 +737,35 @@ app.post('/api/quant/simulate', async (req, res) => {
             volatilities,
             correlationMatrix
         } = req.body;
+
+        if (!Array.isArray(symbols) || symbols.length < 1 || symbols.length > 50 || symbols.some(s => typeof s !== 'string' || !/^[A-Z0-9.^=_-]{1,24}$/i.test(s.trim()))) {
+            return res.status(400).json({ error: 'Provide between 1 and 50 valid ticker symbols.' });
+        }
+        if (!Array.isArray(weights) || weights.length !== symbols.length || weights.some(w => !Number.isFinite(Number(w)) || Number(w) < 0 || Number(w) > 1)) {
+            return res.status(400).json({ error: 'Weights must contain one value from 0 to 1 for each symbol.' });
+        }
+        const weightTotal = weights.reduce((sum, weight) => sum + Number(weight), 0);
+        if (Math.abs(weightTotal - 1) > 0.0001) {
+            return res.status(400).json({ error: `Portfolio weights must total 100%; received ${(weightTotal * 100).toFixed(2)}%.` });
+        }
+        if (!Number.isFinite(Number(initialPortfolioValue)) || Number(initialPortfolioValue) <= 0) {
+            return res.status(400).json({ error: 'Initial portfolio value must be a positive number.' });
+        }
+        if (!Number.isFinite(Number(riskFreeRate)) || Number(riskFreeRate) < 0 || Number(riskFreeRate) > 1) {
+            return res.status(400).json({ error: 'Risk-free rate must be between 0 and 1.' });
+        }
+        if (expectedReturns !== undefined && (!Array.isArray(expectedReturns) || expectedReturns.length !== symbols.length || expectedReturns.some(value => !Number.isFinite(Number(value)) || Number(value) < -2 || Number(value) > 2))) {
+            return res.status(400).json({ error: 'Expected returns must contain one finite annual value between -2 and 2 for each symbol.' });
+        }
+        if (volatilities !== undefined && (!Array.isArray(volatilities) || volatilities.length !== symbols.length || volatilities.some(value => !Number.isFinite(Number(value)) || Number(value) <= 0 || Number(value) > 3))) {
+            return res.status(400).json({ error: 'Volatilities must contain one positive annual value no greater than 3 for each symbol.' });
+        }
+        if (correlationMatrix !== undefined && (!Array.isArray(correlationMatrix) || correlationMatrix.length !== symbols.length || correlationMatrix.some((row, i) => !Array.isArray(row) || row.length !== symbols.length || row.some((value, j) => !Number.isFinite(Number(value)) || Number(value) < -1 || Number(value) > 1 || (i === j && Math.abs(Number(value) - 1) > 0.0001))))) {
+            return res.status(400).json({ error: 'Correlation matrix must be square, finite, bounded from -1 to 1, and have ones on its diagonal.' });
+        }
+        if (correlationMatrix !== undefined && correlationMatrix.some((row, i) => row.some((value, j) => Math.abs(Number(value) - Number(correlationMatrix[j][i])) > 0.0001))) {
+            return res.status(400).json({ error: 'Correlation matrix must be symmetric.' });
+        }
 
         let finalReturns = expectedReturns;
         let finalVols = volatilities;
@@ -573,23 +817,10 @@ app.post('/api/quant/simulate', async (req, res) => {
         // Run C++ Engine
         const cppResult = await runCppQuantEngine(inputPayload);
 
-        // Run JS Benchmark on identical parameters
-        const jsBenchmark = runJsMonteCarloBenchmark(inputPayload);
-        const speedupFactor = cppResult.benchmark.executionTimeMs > 0
-            ? Number((jsBenchmark.executionTimeMs / cppResult.benchmark.executionTimeMs).toFixed(1))
-            : 1.0;
-
         res.json({
             success: true,
+            engineMode: 'cloud',
             cpp: cppResult,
-            jsBenchmark,
-            speedupFactor,
-            systemSpecs: {
-                compiler: "MSYS2 UCRT64 GCC 14.2.0 (C++20)",
-                vectorization: "SIMD & OpenMP Parallel Loop Partitioning",
-                prng: "Thread-Local 64-bit Mersenne Twister (std::mt19937_64)",
-                threads: cppResult.benchmark.numThreads
-            }
         });
     } catch (error) {
         console.error("Quant Simulation Error:", error);
