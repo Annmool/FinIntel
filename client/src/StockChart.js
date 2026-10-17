@@ -52,15 +52,25 @@ const StockChart = ({ data, theme }) => {
             wickDownColor: colors.downColor,
         });
 
+        const seenDates = new Set();
         const formattedData = [...data]
-            .map(item => ({
-                time: item.datetime.split(" ")[0],
-                open: parseFloat(item.open),
-                high: parseFloat(item.high),
-                low: parseFloat(item.low),
-                close: parseFloat(item.close)
-            }))
-            .sort((a, b) => new Date(a.time) - new Date(b.time));
+            .map(item => {
+                const timeStr = item.datetime ? String(item.datetime).split(" ")[0] : null;
+                return {
+                    time: timeStr,
+                    open: parseFloat(item.open),
+                    high: parseFloat(item.high),
+                    low: parseFloat(item.low),
+                    close: parseFloat(item.close)
+                };
+            })
+            .filter(item => item.time && !isNaN(item.open) && !isNaN(item.high) && !isNaN(item.low) && !isNaN(item.close))
+            .sort((a, b) => new Date(a.time) - new Date(b.time))
+            .filter(item => {
+                if (seenDates.has(item.time)) return false;
+                seenDates.add(item.time);
+                return true;
+            });
 
         candlestickSeries.setData(formattedData);
 

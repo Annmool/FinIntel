@@ -25,15 +25,18 @@ const TickerTape = () => {
         return () => clearInterval(interval);
     }, []);
 
-    const renderStockItems = () => stocks.map((s, i) => {
+    const renderStockItems = (copy) => stocks.map((s, i) => {
         const price = s.close ? parseFloat(s.close).toFixed(2) : "0.00";
         const change = s.percent_change ? parseFloat(s.percent_change).toFixed(2) : "0.00";
         const isPositive = parseFloat(change) >= 0;
 
+        const isIndian = s.symbol?.endsWith('.NS') || s.symbol?.endsWith('.BO');
+        const cur = isIndian ? '₹' : '$';
+
         return (
-            <div className="ticker-item" key={i}>
+            <div className="ticker-item" key={`${copy}-${s.symbol}-${i}`}>
                 <span className="ticker-symbol">{s.symbol}</span>
-                <span className="ticker-price">${price}</span>
+                <span className="ticker-price">{cur}{price}</span>
                 <span className={`ticker-change ${isPositive ? 'up' : 'down'}`}>
                     {isPositive ? '▲' : '▼'} {Math.abs(change)}%
                 </span>
@@ -45,9 +48,12 @@ const TickerTape = () => {
         <div className="ticker-container">
             <div className="ticker-wrap">
                 <div className="ticker-move">
-                    {renderStockItems()}
-                    {/* Duplicate for seamless infinite loop */}
-                    {renderStockItems()}
+                    <div className="ticker-group" aria-hidden="true">
+                        {[0, 1, 2, 3].map(copy => renderStockItems(`first-${copy}`))}
+                    </div>
+                    <div className="ticker-group" aria-hidden="true">
+                        {[0, 1, 2, 3].map(copy => renderStockItems(`second-${copy}`))}
+                    </div>
                 </div>
             </div>
         </div>
