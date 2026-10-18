@@ -56,6 +56,37 @@ const fetchWithCache = async (url, cacheKey, ttl = 60) => {
     }
 };
 
+const isValidCandleData = (d) => {
+    return Boolean(
+        d &&
+        Array.isArray(d.values) &&
+        d.values.length > 0 &&
+        d.values[0] &&
+        d.values[0].datetime &&
+        d.values[0].open !== undefined &&
+        d.values[0].close !== undefined
+    );
+};
+
+const fetchFromYahoo = async (sym) => {
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    const queryOptions = { period1: oneYearAgo.toISOString().split('T')[0], interval: '1d' };
+    const result = await yahooFinance.chart(sym, queryOptions, { validateResult: false });
+    if (!result || !result.quotes || result.quotes.length === 0) throw new Error("No data found on Yahoo Finance");
+    return {
+        meta: { symbol: sym },
+        values: result.quotes.filter(q => q.open && q.close).map(q => ({
+            datetime: q.date.toISOString().split('T')[0],
+            open: q.open.toString(),
+            high: q.high.toString(),
+            low: q.low.toString(),
+            close: q.close.toString(),
+            volume: q.volume ? q.volume.toString() : "0"
+        })).reverse()
+    };
+};
+
 // --- 3. Automated Cron Job for Price Alerts ---
 cron.schedule('*/5 * * * *', async () => {
     try {
@@ -134,29 +165,14 @@ app.get('/api/stock/:symbol', async (req, res) => {
         preferYahoo = true;
     }
 
-    const fetchFromYahoo = async (sym) => {
-        const oneYearAgo = new Date();
-        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-        const queryOptions = { period1: oneYearAgo.toISOString().split('T')[0], interval: '1d' };
-        const result = await yahooFinance.chart(sym, queryOptions, { validateResult: false });
-        if (!result || !result.quotes || result.quotes.length === 0) throw new Error("No data found on Yahoo Finance");
-        return {
-            meta: { symbol: sym },
-            values: result.quotes.filter(q => q.open && q.close).map(q => ({
-                datetime: q.date.toISOString().split('T')[0],
-                open: q.open.toString(),
-                high: q.high.toString(),
-                low: q.low.toString(),
-                close: q.close.toString(),
-                volume: q.volume ? q.volume.toString() : "0"
-            })).reverse()
-        };
-    };
-
     try {
         const cacheKey = `stock_${rawSymbol}`;
         const cached = myCache.get(cacheKey);
-        if (cached) return res.json(cached);
+        if (isValidCandleData(cached)) {
+            return res.json(cached);
+        } else if (cached) {
+            myCache.del(cacheKey);
+        }
 
         let data;
         if (preferYahoo) {
@@ -164,9 +180,9 @@ app.get('/api/stock/:symbol', async (req, res) => {
         } else {
             try {
                 const url = `${TWELVE_DATA_URL}/time_series?symbol=${symbol}${exchangeParam}&interval=1day&apikey=${process.env.STOCK_API_KEY}`;
-                data = await fetchWithCache(url, cacheKey, 300);
-                if (!data || data.status === 'error' || !data.values || data.values.length === 0) {
-                    throw new Error("Twelve Data returned error or no quotes");
+                data = await fetchWithCache(url, `td_raw_${rawSymbol}`, 300);
+                if (!isValidCandleData(data)) {
+                    throw new Error("Twelve Data returned error or incomplete quotes");
                 }
                 if (data && data.meta) data.meta.symbol = rawSymbol;
             } catch (err) {
@@ -177,7 +193,9 @@ app.get('/api/stock/:symbol', async (req, res) => {
             }
         }
 
-        myCache.set(cacheKey, data, 300);
+        if (isValidCandleData(data)) {
+            myCache.set(cacheKey, data, 300);
+        }
         res.json(data);
     } catch (e) {
         console.error("Stock Fetch Error:", e.message);
@@ -776,20 +794,32 @@ app.post('/api/quant/simulate', async (req, res) => {
             const historyMap = {};
             for (const sym of symbols) {
                 try {
-                    const cacheKey = `stock_${sym.toUpperCase()}`;
-                    let cached = myCache.get(cacheKey);
-                    if (!cached) {
-                        const oneYearAgo = new Date();
-                        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-                        const queryOptions = { period1: oneYearAgo.toISOString().split('T')[0], interval: '1d' };
-                        const result = await yahooFinance.chart(sym, queryOptions, { validateResult: false });
-                        if (result && result.quotes) {
-                            cached = { values: result.quotes.filter(q => q.close).map(q => ({ close: q.close })) };
-                            myCache.set(cacheKey, cached, 3600);
+                    const cleanSym = sym.toUpperCase();
+                    const quantCacheKey = `quant_hist_${cleanSym}`;
+                    let cachedPrices = myCache.get(quantCacheKey);
+
+                    if (!cachedPrices) {
+                        // Check if main stock cache already has full data
+                        const mainStock = myCache.get(`stock_${cleanSym}`);
+                        if (isValidCandleData(mainStock)) {
+                            cachedPrices = mainStock.values;
+                        } else {
+                            try {
+                                const yfData = await fetchFromYahoo(cleanSym);
+                                if (isValidCandleData(yfData)) {
+                                    myCache.set(`stock_${cleanSym}`, yfData, 300);
+                                    cachedPrices = yfData.values;
+                                }
+                            } catch (_) {}
+                        }
+
+                        if (cachedPrices) {
+                            myCache.set(quantCacheKey, cachedPrices, 3600);
                         }
                     }
-                    if (cached && cached.values) {
-                        historyMap[sym] = cached.values;
+
+                    if (cachedPrices) {
+                        historyMap[sym] = cachedPrices;
                     }
                 } catch (err) {
                     console.log(`Note: Using model default stats for ${sym}`);

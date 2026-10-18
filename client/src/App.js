@@ -254,8 +254,15 @@ function App() {
         setData(null);
       } else {
         const symbolVal = stockRes.data.meta?.symbol || sym.toUpperCase();
+        const sortedValues = [...stockRes.data.values].sort((a, b) => {
+          if (a.datetime && b.datetime) {
+            return new Date(b.datetime) - new Date(a.datetime);
+          }
+          return 0;
+        });
         setData({
           ...stockRes.data,
+          values: sortedValues,
           meta: { ...(stockRes.data.meta || {}), symbol: symbolVal },
           fundamentals: fundRes.data || {}
         });
