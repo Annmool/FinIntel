@@ -7,13 +7,26 @@ const BINARY_NAME = isWindows ? 'quant_engine.exe' : 'quant_engine';
 const QUANT_BINARY = path.join(__dirname, 'quant_core', BINARY_NAME);
 const SOURCE_FILE = path.join(__dirname, 'quant_core', 'quant_engine.cpp');
 
+// Ensure MSYS2 paths are included in PATH on Windows for OpenMP DLLs and GCC 14.2
+const extendedEnv = { ...process.env };
+if (isWindows) {
+  const msysPaths = ['C:\\msys64\\ucrt64\\bin', 'C:\\msys64\\mingw64\\bin', 'C:\\msys64\\usr\\bin'];
+  const validMsys = msysPaths.filter(p => fs.existsSync(p));
+  if (validMsys.length > 0) {
+    extendedEnv.PATH = `${validMsys.join(';')};${extendedEnv.PATH || ''}`;
+  }
+}
+
 // Auto-compile helper if binary is missing (e.g. on fresh Render Linux deploy)
 function ensureBinaryExists() {
   if (fs.existsSync(QUANT_BINARY)) return true;
   console.log(`[QuantCore] Native binary missing at ${QUANT_BINARY}. Attempting compilation with g++...`);
   try {
-    const compileCmd = `g++ -O3 -fopenmp -std=c++20 "${SOURCE_FILE}" -o "${QUANT_BINARY}"`;
-    execSync(compileCmd, { stdio: 'inherit' });
+    const gppCmd = isWindows && fs.existsSync('C:\\msys64\\ucrt64\\bin\\g++.exe')
+      ? 'C:\\msys64\\ucrt64\\bin\\g++.exe'
+      : 'g++';
+    const compileCmd = `"${gppCmd}" -O3 -fopenmp -std=c++20 -ffast-math "${SOURCE_FILE}" -o "${QUANT_BINARY}"`;
+    execSync(compileCmd, { stdio: 'inherit', env: extendedEnv });
     if (!isWindows) {
       try { fs.chmodSync(QUANT_BINARY, 0o755); } catch (_) {}
     }
@@ -70,7 +83,7 @@ function runCppQuantEngine(inputData) {
 
     const child = spawn(QUANT_BINARY, [], {
       windowsHide: true,
-      env: process.env
+      env: extendedEnv
     });
 
     let stdoutData = '';

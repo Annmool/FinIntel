@@ -72,6 +72,53 @@ struct QuantResult {
     FrontierPoint minVolPortfolio;
 };
 
+// Ultra-fast 64-bit xoshiro256** PRNG with Box-Muller Gaussian generator
+struct FastRng {
+    uint64_t s[4];
+    static inline uint64_t rotl(const uint64_t x, int k) noexcept {
+        return (x << k) | (x >> (64 - k));
+    }
+    inline uint64_t next() noexcept {
+        const uint64_t result = rotl(s[1] * 5, 7) * 9;
+        const uint64_t t = s[1] << 17;
+        s[2] ^= s[0];
+        s[3] ^= s[1];
+        s[1] ^= s[2];
+        s[0] ^= s[3];
+        s[2] ^= t;
+        s[3] = rotl(s[3], 45);
+        return result;
+    }
+    inline double nextDouble() noexcept {
+        return (next() >> 11) * (1.0 / 9007199254740992.0);
+    }
+    bool hasSpare = false;
+    double spare = 0.0;
+    inline double nextGaussian() noexcept {
+        if (hasSpare) {
+            hasSpare = false;
+            return spare;
+        }
+        double u1 = nextDouble();
+        while (u1 <= 1e-15) u1 = nextDouble();
+        double u2 = nextDouble();
+        double radius = std::sqrt(-2.0 * std::log(u1));
+        double angle = 6.28318530717958647692 * u2;
+        spare = radius * std::sin(angle);
+        hasSpare = true;
+        return radius * std::cos(angle);
+    }
+    void seed(uint64_t x) noexcept {
+        for (int i = 0; i < 4; i++) {
+            uint64_t z = (x += 0x9e3779b97f4a7c15ULL);
+            z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+            z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+            s[i] = z ^ (z >> 31);
+        }
+        hasSpare = false;
+    }
+};
+
 // Cholesky decomposition: A = L * L^T where A is positive semi-definite correlation/covariance matrix
 std::vector<std::vector<double>> choleskyDecomposition(const std::vector<std::vector<double>>& matrix, int n) {
     std::vector<std::vector<double>> L(n, std::vector<double>(n, 0.0));
@@ -242,20 +289,10 @@ void computeEfficientFrontier(
     const SimInput& in,
     QuantResult& out,
     const std::vector<std::vector<double>>& covMatrix,
-    int numSamples = 2500
+    int numSamples = 2000
 ) {
     int n = in.symbols.size();
-    std::mt19937_64 rng(1337);
-    std::uniform_real_distribution<double> dist(0.0, 1.0);
-
-    QuantResult::FrontierPoint bestSharpe;
-    bestSharpe.sharpe = -9999.0;
-
-    QuantResult::FrontierPoint minVol;
-    minVol.volatility = 999999.0;
-
-    std::vector<QuantResult::FrontierPoint> points;
-    points.reserve(numSamples + n + 1);
+    std::vector<QuantResult::FrontierPoint> points(numSamples + n);
 
     // 1. Single-asset corner points
     for (int i = 0; i < n; i++) {
@@ -265,46 +302,55 @@ void computeEfficientFrontier(
         p.expectedReturn = in.expectedReturns[i];
         p.volatility = in.volatilities[i];
         p.sharpe = (p.volatility > 1e-6) ? (p.expectedReturn - in.riskFreeRate) / p.volatility : 0.0;
-        points.push_back(p);
-
-        if (p.sharpe > bestSharpe.sharpe) bestSharpe = p;
-        if (p.volatility < minVol.volatility) minVol = p;
+        points[i] = std::move(p);
     }
 
-    // 2. Uniform random Dirichlet weights sampling
-    for (int s = 0; s < numSamples; s++) {
-        std::vector<double> w(n);
-        double sum = 0.0;
-        for (int i = 0; i < n; i++) {
-            // Exponential distribution yields uniform Dirichlet on simplex
-            w[i] = -std::log(std::max(1e-10, dist(rng)));
-            sum += w[i];
-        }
-        for (int i = 0; i < n; i++) w[i] /= sum;
+    // 2. Uniform random Dirichlet weights sampling (parallelized)
+    #pragma omp parallel
+    {
+        int tid = omp_get_thread_num();
+        FastRng localRng;
+        localRng.seed(987654321ULL + static_cast<uint64_t>(tid) * 104729ULL + static_cast<uint64_t>(n));
 
-        // Portfolio expected return: w^T * mu
-        double portReturn = 0.0;
-        for (int i = 0; i < n; i++) portReturn += w[i] * in.expectedReturns[i];
-
-        // Portfolio variance: w^T * Cov * w
-        double portVar = 0.0;
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j < n; j++) {
-                portVar += w[i] * w[j] * covMatrix[i][j];
+        #pragma omp for schedule(static)
+        for (int s = 0; s < numSamples; s++) {
+            std::vector<double> w(n);
+            double sum = 0.0;
+            for (int i = 0; i < n; i++) {
+                double u = localRng.nextDouble();
+                while (u <= 1e-15) u = localRng.nextDouble();
+                w[i] = -std::log(u);
+                sum += w[i];
             }
+            for (int i = 0; i < n; i++) w[i] /= sum;
+
+            double portReturn = 0.0;
+            for (int i = 0; i < n; i++) portReturn += w[i] * in.expectedReturns[i];
+
+            double portVar = 0.0;
+            for (int i = 0; i < n; i++) {
+                for (int j = 0; j < n; j++) {
+                    portVar += w[i] * w[j] * covMatrix[i][j];
+                }
+            }
+            double portVol = std::sqrt(std::max(0.0, portVar));
+            double sharpe = (portVol > 1e-6) ? (portReturn - in.riskFreeRate) / portVol : 0.0;
+
+            QuantResult::FrontierPoint p;
+            p.expectedReturn = portReturn;
+            p.volatility = portVol;
+            p.sharpe = sharpe;
+            p.weights = std::move(w);
+            points[n + s] = std::move(p);
         }
-        double portVol = std::sqrt(std::max(0.0, portVar));
-        double sharpe = (portVol > 1e-6) ? (portReturn - in.riskFreeRate) / portVol : 0.0;
+    }
 
-        QuantResult::FrontierPoint p;
-        p.expectedReturn = portReturn;
-        p.volatility = portVol;
-        p.sharpe = sharpe;
-        p.weights = w;
-        points.push_back(p);
-
-        if (sharpe > bestSharpe.sharpe) bestSharpe = p;
-        if (portVol < minVol.volatility) minVol = p;
+    // Find best Sharpe and minimum volatility
+    QuantResult::FrontierPoint bestSharpe = points[0];
+    QuantResult::FrontierPoint minVol = points[0];
+    for (const auto& p : points) {
+        if (p.sharpe > bestSharpe.sharpe) bestSharpe = p;
+        if (p.volatility < minVol.volatility) minVol = p;
     }
 
     // Sort by volatility to construct the upper boundary curve (Efficient Frontier)
@@ -314,6 +360,7 @@ void computeEfficientFrontier(
 
     // Extract Pareto optimal frontier points
     std::vector<QuantResult::FrontierPoint> frontier;
+    frontier.reserve(60);
     double maxReturnSoFar = -9999.0;
     for (const auto& pt : points) {
         if (pt.expectedReturn > maxReturnSoFar) {
@@ -322,9 +369,9 @@ void computeEfficientFrontier(
         }
     }
 
-    out.frontierPoints = frontier;
-    out.maxSharpePortfolio = bestSharpe;
-    out.minVolPortfolio = minVol;
+    out.frontierPoints = std::move(frontier);
+    out.maxSharpePortfolio = std::move(bestSharpe);
+    out.minVolPortfolio = std::move(minVol);
 }
 
 int main(int argc, char* argv[]) {
@@ -393,24 +440,42 @@ int main(int argc, char* argv[]) {
     int numSamplePaths = 15;
     std::vector<std::vector<double>> samplePaths(numSamplePaths, std::vector<double>(snapshotSteps, in.initialPortfolioValue));
 
-    int numThreads = omp_get_max_threads();
+    // Precalculate asset drift and scale Cholesky correlation matrix by (vol * sqrt(dt))
+    std::vector<double> assetDrift(n);
+    std::vector<double> initAssetVals(n);
+    double sqrtDt = std::sqrt(dt);
+    for (int i = 0; i < n; i++) {
+        assetDrift[i] = (in.expectedReturns[i] - 0.5 * in.volatilities[i] * in.volatilities[i]) * dt;
+        initAssetVals[i] = in.initialPortfolioValue * in.weights[i];
+    }
+
+    std::vector<std::vector<double>> scaledL(n, std::vector<double>(n, 0.0));
+    for (int i = 0; i < n; i++) {
+        double v = in.volatilities[i] * sqrtDt;
+        for (int k = 0; k <= i; k++) {
+            scaledL[i][k] = L[i][k] * v;
+        }
+    }
+
+    // Dynamic thread clamp: prevents thread contention in containerized/virtualized environments
+    omp_set_dynamic(1);
+    int numThreads = std::clamp(omp_get_max_threads(), 1, 8);
+    omp_set_num_threads(numThreads);
 
     #pragma omp parallel
     {
         int tid = omp_get_thread_num();
-        // High quality 64-bit Mersenne Twister seeded uniquely per thread
-        std::mt19937_64 rng(std::random_device{}() + tid * 104729);
-        std::normal_distribution<double> normDist(0.0, 1.0);
+        FastRng rng;
+        rng.seed(13371337ULL + static_cast<uint64_t>(tid) * 2654435761ULL + static_cast<uint64_t>(M));
 
         std::vector<double> indShocks(n);
-        std::vector<double> corrShocks(n);
         std::vector<double> assetValues(n);
 
         #pragma omp for schedule(static)
         for (int sim = 0; sim < M; sim++) {
             // Initial asset value allocation
             for (int i = 0; i < n; i++) {
-                assetValues[i] = in.initialPortfolioValue * in.weights[i];
+                assetValues[i] = initAssetVals[i];
             }
 
             double peakValue = in.initialPortfolioValue;
@@ -420,24 +485,17 @@ int main(int argc, char* argv[]) {
             for (int t = 1; t <= T; t++) {
                 // Generate independent Gaussian standard normals
                 for (int i = 0; i < n; i++) {
-                    indShocks[i] = normDist(rng);
+                    indShocks[i] = rng.nextGaussian();
                 }
 
-                // Correlate shocks using Cholesky lower triangular matrix: corrShocks = L * indShocks
-                for (int i = 0; i < n; i++) {
-                    double sum = 0.0;
-                    for (int k = 0; k <= i; k++) {
-                        sum += L[i][k] * indShocks[k];
-                    }
-                    corrShocks[i] = sum;
-                }
-
-                // Evolve each asset via Geometric Brownian Motion
+                // Correlate shocks & evolve asset values
                 double portTotal = 0.0;
                 for (int i = 0; i < n; i++) {
-                    double drift = (in.expectedReturns[i] - 0.5 * in.volatilities[i] * in.volatilities[i]) * dt;
-                    double diffusion = in.volatilities[i] * std::sqrt(dt) * corrShocks[i];
-                    assetValues[i] *= std::exp(drift + diffusion);
+                    double diffusion = 0.0;
+                    for (int k = 0; k <= i; k++) {
+                        diffusion += scaledL[i][k] * indShocks[k];
+                    }
+                    assetValues[i] *= std::exp(assetDrift[i] + diffusion);
                     portTotal += assetValues[i];
                 }
 
