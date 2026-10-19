@@ -763,9 +763,11 @@ app.post('/api/quant/simulate', async (req, res) => {
             return res.status(400).json({ error: 'Weights must contain one value from 0 to 1 for each symbol.' });
         }
         const weightTotal = weights.reduce((sum, weight) => sum + Number(weight), 0);
-        if (Math.abs(weightTotal - 1) > 0.0001) {
+        if (Math.abs(weightTotal - 1) > 0.02) {
             return res.status(400).json({ error: `Portfolio weights must total 100%; received ${(weightTotal * 100).toFixed(2)}%.` });
         }
+        const normalizedWeights = weights.map(w => Number((Number(w) / weightTotal).toFixed(6)));
+
         if (!Number.isFinite(Number(initialPortfolioValue)) || Number(initialPortfolioValue) <= 0) {
             return res.status(400).json({ error: 'Initial portfolio value must be a positive number.' });
         }
@@ -789,17 +791,27 @@ app.post('/api/quant/simulate', async (req, res) => {
         let finalVols = volatilities;
         let finalCorr = correlationMatrix;
 
-        // If returns/vols are not provided, try to fetch historical data or use standard estimates
+        // If returns/vols are not provided, check known presets or fetch historical data in parallel
         if (!finalReturns || !finalVols || !finalCorr) {
+            // Check if matches an institutional preset first (instant 0ms resolution)
+            const matchedPreset = Object.values(PRESETS).find(p => 
+                p.symbols.length === symbols.length && 
+                p.symbols.every((s, i) => s.toUpperCase() === symbols[i].toUpperCase())
+            );
+
+            if (matchedPreset && (!finalReturns || !finalVols)) {
+                finalReturns = finalReturns || matchedPreset.expectedReturns;
+                finalVols = finalVols || matchedPreset.volatilities;
+            }
+
             const historyMap = {};
-            for (const sym of symbols) {
+            await Promise.all(symbols.map(async (sym) => {
                 try {
                     const cleanSym = sym.toUpperCase();
                     const quantCacheKey = `quant_hist_${cleanSym}`;
                     let cachedPrices = myCache.get(quantCacheKey);
 
                     if (!cachedPrices) {
-                        // Check if main stock cache already has full data
                         const mainStock = myCache.get(`stock_${cleanSym}`);
                         if (isValidCandleData(mainStock)) {
                             cachedPrices = mainStock.values;
@@ -822,9 +834,9 @@ app.post('/api/quant/simulate', async (req, res) => {
                         historyMap[sym] = cachedPrices;
                     }
                 } catch (err) {
-                    console.log(`Note: Using model default stats for ${sym}`);
+                    // Fall back gracefully
                 }
-            }
+            }));
 
             const computed = computeAssetParameters(historyMap, symbols);
             finalReturns = finalReturns || computed.expectedReturns;
@@ -834,7 +846,7 @@ app.post('/api/quant/simulate', async (req, res) => {
 
         const inputPayload = {
             symbols,
-            weights,
+            weights: normalizedWeights,
             numSimulations: Math.min(200000, Math.max(1000, parseInt(numSimulations) || 50000)),
             timeHorizonDays: Math.min(365, Math.max(10, parseInt(timeHorizonDays) || 90)),
             initialPortfolioValue: parseFloat(initialPortfolioValue) || 100000,
