@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { ArrowLeft, Activity, ArrowUpRight, ArrowDownRight, Search, RefreshCw } from 'lucide-react';
 
-const API_URL = process.env.NODE_ENV === 'production' ? 'https://finintel-qj46.onrender.com' : 'http://localhost:5000';
+import { API_URL } from './apiConfig';
 
 function Screener({ onClose, onSelectSymbol }) {
     const [filterType, setFilterType] = useState('day_gainers');

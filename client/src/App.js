@@ -38,7 +38,7 @@ import { calculateRSI } from './utils/indicators';
 import { auth, provider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 
-const API_URL = process.env.NODE_ENV === 'production' ? 'https://finintel-qj46.onrender.com' : 'http://localhost:5000';
+import { API_URL } from './apiConfig';
 const UPTIMEROBOT_STATUS_URL = 'https://dashboard.uptimerobot.com/monitors/803125214';
 
 function App() {

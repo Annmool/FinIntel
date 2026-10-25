@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 
-const API_URL = process.env.NODE_ENV === 'production' ? 'https://finintel-qj46.onrender.com' : 'http://localhost:5000';
+import { API_URL } from './apiConfig';
 
 const TickerTape = () => {
     const [stocks, setStocks] = useState(() => {

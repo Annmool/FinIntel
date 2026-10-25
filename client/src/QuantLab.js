@@ -21,7 +21,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 
-const API_URL = process.env.NODE_ENV === 'production' ? 'https://finintel-qj46.onrender.com' : 'http://localhost:5000';
+import { API_URL } from './apiConfig';
 
 const ASSET_COLORS = [
   '#4ADE80', // Emerald green
