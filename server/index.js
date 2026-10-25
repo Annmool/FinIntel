@@ -150,6 +150,11 @@ cron.schedule('*/5 * * * *', async () => {
 
 // --- 4. Main API Routes ---
 
+// Health Check / Root endpoint
+app.get('/', (req, res) => {
+    res.status(200).json({ status: "ok", message: "FinIntel Backend API is running", timestamp: new Date().toISOString() });
+});
+
 // Stock Data (Twelve Data with Yahoo Finance Fallback/NSE Support)
 app.get('/api/stock/:symbol', async (req, res) => {
     let rawSymbol = req.params.symbol.toUpperCase();
