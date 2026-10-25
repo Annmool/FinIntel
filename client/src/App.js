@@ -227,22 +227,54 @@ function App() {
   }, [symbol, showSuggestions]);
 
   const fetchStockData = async (s) => {
-    const sym = (s || symbol)?.trim();
+    let sym = (s || symbol)?.trim();
     if (!sym) return;
     setShowSuggestions(false);
     setSuggestions([]);
-    setSymbol(sym.toUpperCase());
     setLoading(true);
     setAppError('');
     setAiAnalysis('');
     setActiveTab('markets');
 
     try {
-      const [stockRes, newsRes, fundRes] = await Promise.all([
-        axios.get(`${API_URL}/api/stock/${encodeURIComponent(sym)}`),
-        axios.get(`${API_URL}/api/news/${encodeURIComponent(sym)}`),
-        axios.get(`${API_URL}/api/fundamentals/${encodeURIComponent(sym)}`)
-      ]);
+      let targetSym = sym.toUpperCase();
+      let stockRes, newsRes, fundRes;
+
+      try {
+        [stockRes, newsRes, fundRes] = await Promise.all([
+          axios.get(`${API_URL}/api/stock/${encodeURIComponent(targetSym)}`),
+          axios.get(`${API_URL}/api/news/${encodeURIComponent(targetSym)}`),
+          axios.get(`${API_URL}/api/fundamentals/${encodeURIComponent(targetSym)}`)
+        ]);
+
+        if (
+          !stockRes.data ||
+          stockRes.data.status === 'error' ||
+          !stockRes.data.values ||
+          stockRes.data.values.length === 0
+        ) {
+          throw new Error("Invalid or empty stock data");
+        }
+      } catch (directErr) {
+        // If symbol lookup fails (e.g. user entered "APPLE" instead of "AAPL"), try smart-resolving symbol via search
+        try {
+          const searchRes = await axios.get(`${API_URL}/api/search/${encodeURIComponent(targetSym)}`);
+          if (searchRes.data && Array.isArray(searchRes.data) && searchRes.data.length > 0 && searchRes.data[0].symbol) {
+            targetSym = searchRes.data[0].symbol.toUpperCase();
+            [stockRes, newsRes, fundRes] = await Promise.all([
+              axios.get(`${API_URL}/api/stock/${encodeURIComponent(targetSym)}`),
+              axios.get(`${API_URL}/api/news/${encodeURIComponent(targetSym)}`),
+              axios.get(`${API_URL}/api/fundamentals/${encodeURIComponent(targetSym)}`)
+            ]);
+          } else {
+            throw directErr;
+          }
+        } catch {
+          throw directErr;
+        }
+      }
+
+      setSymbol(targetSym);
 
       if (
         !stockRes.data ||
@@ -250,10 +282,10 @@ function App() {
         !stockRes.data.values ||
         stockRes.data.values.length === 0
       ) {
-        setAppError(`Unable to load market feed for ${sym.toUpperCase()}. Please check ticker or try again.`);
+        setAppError(`Unable to load market feed for ${targetSym}. Please check ticker or try again.`);
         setData(null);
       } else {
-        const symbolVal = stockRes.data.meta?.symbol || sym.toUpperCase();
+        const symbolVal = stockRes.data.meta?.symbol || targetSym;
         const sortedValues = [...stockRes.data.values].sort((a, b) => {
           if (a.datetime && b.datetime) {
             return new Date(b.datetime) - new Date(a.datetime);
@@ -776,6 +808,10 @@ function App() {
                     e.preventDefault();
                     if (selectedSuggestionIndex >= 0 && suggestions[selectedSuggestionIndex]) {
                       const selected = suggestions[selectedSuggestionIndex].symbol;
+                      setSymbol(selected);
+                      fetchStockData(selected);
+                    } else if (suggestions.length > 0 && suggestions[0]?.symbol) {
+                      const selected = suggestions[0].symbol;
                       setSymbol(selected);
                       fetchStockData(selected);
                     } else {
