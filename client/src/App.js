@@ -25,7 +25,8 @@ import {
   ArrowDownRight,
   ShieldCheck,
   PieChart,
-  Newspaper
+  Newspaper,
+  Globe
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -66,12 +67,31 @@ function App() {
   const [isQuantLabOpen, setIsQuantLabOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'markets' | 'portfolio' | 'screener' | 'academy'
   const [portfolioPrices, setPortfolioPrices] = useState({});
+  const [fxRate, setFxRate] = useState(86.80);
+  const [baseCurrency, setBaseCurrency] = useState(() => {
+    try {
+      return localStorage.getItem('finintel_base_currency') || 'USD';
+    } catch {
+      return 'USD';
+    }
+  });
+
+  const toggleBaseCurrency = (curr) => {
+    setBaseCurrency(curr);
+    try {
+      localStorage.setItem('finintel_base_currency', curr);
+    } catch {}
+  };
 
   const searchInputRef = useRef(null);
   const searchContainerRef = useRef(null);
 
-  const getCurrency = (sym) => (sym?.endsWith('.NS') || sym?.endsWith('.BO') ? '₹' : '$');
+  const isIndianSymbol = (sym) => Boolean(sym?.endsWith('.NS') || sym?.endsWith('.BO'));
+  const getCurrency = (sym) => (isIndianSymbol(sym) ? '₹' : '$');
   const currencySymbol = getCurrency(data?.meta?.symbol);
+  const baseCurSymbol = baseCurrency === 'USD' ? '$' : '₹';
+  const altCurrency = baseCurrency === 'USD' ? 'INR' : 'USD';
+  const altCurSymbol = baseCurrency === 'USD' ? '₹' : '$';
 
   // Global Ctrl+K / Cmd+K Search Hotkey
   useEffect(() => {
@@ -192,12 +212,26 @@ function App() {
         .catch(() => {});
     };
 
+    const fetchFxRate = () => {
+      axios.get(`${API_URL}/api/forex/rate`)
+        .then(res => {
+          if (res.data?.rate && Number.isFinite(parseFloat(res.data.rate))) {
+            setFxRate(parseFloat(res.data.rate));
+          }
+        })
+        .catch(() => {});
+    };
+
+    fetchFxRate();
+    const fxInterval = setInterval(fetchFxRate, 10 * 60 * 1000);
+
     fetchBriefing();
     const briefingInterval = setInterval(fetchBriefing, 5 * 60 * 1000);
 
     return () => {
       unsubscribe();
       clearInterval(briefingInterval);
+      clearInterval(fxInterval);
     };
   }, [theme]);
 
@@ -352,9 +386,13 @@ function App() {
         showToast(`Recorded ${qty} shares in Portfolio`);
       }
     } else if (type === 'BUY') {
-      const qtyStr = prompt(
-        `Paper Order: Buy ${data?.meta?.symbol}\nLast Price: ${currencySymbol}${parseFloat(data?.values[0].close).toFixed(2)}\nAvailable Virtual Cash: $${virtualBalance.toFixed(2)}\nShares to BUY:`
-      );
+      const isIndian = isIndianSymbol(data?.meta?.symbol);
+      const priceNative = parseFloat(data?.values[0].close);
+      const priceUsd = isIndian ? priceNative / fxRate : priceNative;
+      const promptText = isIndian
+        ? `Paper Order: Buy ${data?.meta?.symbol}\nMarket Price: ₹${priceNative.toFixed(2)} (~$${priceUsd.toFixed(2)} USD at ₹${fxRate.toFixed(2)}/$)\nAvailable Cash: $${virtualBalance.toFixed(2)} USD (≈ ₹${(virtualBalance * fxRate).toLocaleString(undefined, { maximumFractionDigits: 0 })})\nShares to BUY:`
+        : `Paper Order: Buy ${data?.meta?.symbol}\nMarket Price: $${priceNative.toFixed(2)}\nAvailable Cash: $${virtualBalance.toFixed(2)} USD\nShares to BUY:`;
+      const qtyStr = prompt(promptText);
       if (qtyStr && !isNaN(qtyStr) && parseFloat(qtyStr) > 0) {
         const qty = parseFloat(qtyStr);
         try {
@@ -362,7 +400,7 @@ function App() {
             userId: currUser.uid,
             symbol: data?.meta?.symbol,
             qty,
-            price: data?.values[0].close
+            price: priceNative
           });
           setVirtualBalance(res.data.balance);
           fetchPaperPortfolio(currUser.uid);
@@ -372,9 +410,13 @@ function App() {
         }
       }
     } else if (type === 'SELL') {
-      const qtyStr = prompt(
-        `Paper Order: Sell ${data?.meta?.symbol}\nLast Price: ${currencySymbol}${parseFloat(data?.values[0].close).toFixed(2)}\nEnter shares to SELL:`
-      );
+      const isIndian = isIndianSymbol(data?.meta?.symbol);
+      const priceNative = parseFloat(data?.values[0].close);
+      const priceUsd = isIndian ? priceNative / fxRate : priceNative;
+      const promptText = isIndian
+        ? `Paper Order: Sell ${data?.meta?.symbol}\nMarket Price: ₹${priceNative.toFixed(2)} (~$${priceUsd.toFixed(2)} USD)\nEnter shares to SELL:`
+        : `Paper Order: Sell ${data?.meta?.symbol}\nMarket Price: $${priceNative.toFixed(2)}\nEnter shares to SELL:`;
+      const qtyStr = prompt(promptText);
       if (qtyStr && !isNaN(qtyStr) && parseFloat(qtyStr) > 0) {
         const qty = parseFloat(qtyStr);
         try {
@@ -438,29 +480,65 @@ function App() {
   };
   const verdict = rsiScore ? getVerdict(rsiScore) : { label: 'NEUTRAL', color: 'var(--text-tertiary)' };
 
-  // Calculate Real Portfolio Metrics
+  // Calculate Real Portfolio Metrics with Multi-Currency FX Engine
   const portfolioHoldingsWithPnL = portfolio.map((p) => {
+    const isIndian = isIndianSymbol(p.symbol);
+    const nativeCurrency = isIndian ? 'INR' : 'USD';
+    const nativeSymbol = isIndian ? '₹' : '$';
+
     const currPrice = portfolioPrices[p.symbol] || parseFloat(p.price || 0);
     const entryPrice = parseFloat(p.price || 0);
-    const costBasis = p.qty * entryPrice;
-    const currentVal = p.qty * currPrice;
-    const pnlDollar = currentVal - costBasis;
-    const pnlPercent = costBasis > 0 ? (pnlDollar / costBasis) * 100 : 0;
+
+    const costBasisNative = p.qty * entryPrice;
+    const currentValNative = p.qty * currPrice;
+    const pnlNative = currentValNative - costBasisNative;
+    const pnlPercent = costBasisNative > 0 ? (pnlNative / costBasisNative) * 100 : 0;
+
+    // Convert values to both USD and INR
+    const currentValUSD = isIndian ? (currentValNative / fxRate) : currentValNative;
+    const currentValINR = isIndian ? currentValNative : (currentValNative * fxRate);
+    const costBasisUSD = isIndian ? (costBasisNative / fxRate) : costBasisNative;
+    const costBasisINR = isIndian ? costBasisNative : (costBasisNative * fxRate);
+    const pnlUSD = currentValUSD - costBasisUSD;
+    const pnlINR = currentValINR - costBasisINR;
+
+    // Converted to active baseCurrency
+    const isBaseUSD = baseCurrency === 'USD';
+    const currentValBase = isBaseUSD ? currentValUSD : currentValINR;
+    const costBasisBase = isBaseUSD ? costBasisUSD : costBasisINR;
+    const pnlBase = isBaseUSD ? pnlUSD : pnlINR;
+
     return {
       ...p,
+      isIndian,
+      nativeCurrency,
+      nativeSymbol,
       currPrice,
       entryPrice,
-      costBasis,
-      currentVal,
-      pnlDollar,
-      pnlPercent
+      costBasisNative,
+      currentValNative,
+      pnlNative,
+      pnlPercent,
+      currentValUSD,
+      currentValINR,
+      costBasisUSD,
+      costBasisINR,
+      pnlUSD,
+      pnlINR,
+      currentValBase,
+      costBasisBase,
+      pnlBase
     };
   });
 
-  const totalPortfolioValue = portfolioHoldingsWithPnL.reduce((acc, p) => acc + p.currentVal, 0);
-  const totalCostBasis = portfolioHoldingsWithPnL.reduce((acc, p) => acc + p.costBasis, 0);
+  const totalPortfolioValue = portfolioHoldingsWithPnL.reduce((acc, p) => acc + p.currentValBase, 0);
+  const totalCostBasis = portfolioHoldingsWithPnL.reduce((acc, p) => acc + p.costBasisBase, 0);
   const totalUnrealizedPnL = totalPortfolioValue - totalCostBasis;
   const totalUnrealizedPnLPercent = totalCostBasis > 0 ? (totalUnrealizedPnL / totalCostBasis) * 100 : 0;
+
+  // Secondary alternative currency representation
+  const totalPortfolioValueAlt = baseCurrency === 'USD' ? (totalPortfolioValue * fxRate) : (totalPortfolioValue / fxRate);
+  const virtualBalanceBase = baseCurrency === 'USD' ? virtualBalance : (virtualBalance * fxRate);
 
   // Export Portfolio
   const exportPortfolio = async (type) => {
@@ -471,15 +549,15 @@ function App() {
     showToast('Compiling export data...', 'success');
 
     try {
-      const headers = ['Symbol', 'Quantity', 'Entry Price', 'Market Price', 'Cost Basis', 'Current Value', 'Unrealized P/L'];
+      const headers = ['Symbol', 'Quantity', 'Entry Price', 'Market Price', 'Native Value', `Value (${baseCurrency})`, 'Unrealized P/L'];
       const rows = portfolioHoldingsWithPnL.map((p) => [
         p.symbol,
         p.qty.toString(),
-        `$${p.entryPrice.toFixed(2)}`,
-        `$${p.currPrice.toFixed(2)}`,
-        `$${p.costBasis.toFixed(2)}`,
-        `$${p.currentVal.toFixed(2)}`,
-        `${p.pnlDollar >= 0 ? '+' : ''}$${p.pnlDollar.toFixed(2)} (${p.pnlPercent.toFixed(1)}%)`
+        `${p.nativeSymbol}${p.entryPrice.toFixed(2)}`,
+        `${p.nativeSymbol}${p.currPrice.toFixed(2)}`,
+        `${p.nativeSymbol}${p.currentValNative.toFixed(2)}`,
+        `${baseCurSymbol}${p.currentValBase.toFixed(2)}`,
+        `${p.pnlNative >= 0 ? '+' : ''}${p.nativeSymbol}${p.pnlNative.toFixed(2)} (${p.pnlPercent.toFixed(1)}%)`
       ]);
 
       if (type === 'csv') {
@@ -487,7 +565,7 @@ function App() {
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement('a');
         link.setAttribute('href', encodedUri);
-        link.setAttribute('download', `FinIntel_Portfolio_${new Date().toISOString().split('T')[0]}.csv`);
+        link.setAttribute('download', `FinIntel_Portfolio_${baseCurrency}_${new Date().toISOString().split('T')[0]}.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -495,9 +573,9 @@ function App() {
       } else if (type === 'pdf') {
         const doc = new jsPDF();
         doc.setFontSize(14);
-        doc.text('FinIntel — Institutional Portfolio Statement', 14, 15);
+        doc.text(`FinIntel — Institutional Portfolio Statement (${baseCurrency})`, 14, 15);
         doc.setFontSize(9);
-        doc.text(`Generated: ${new Date().toUTCString()} | Valuation: $${totalPortfolioValue.toFixed(2)}`, 14, 22);
+        doc.text(`Generated: ${new Date().toUTCString()} | Valuation: ${baseCurSymbol}${totalPortfolioValue.toFixed(2)} | FX: 1 USD = ₹${fxRate.toFixed(2)}`, 14, 22);
         autoTable(doc, {
           head: [headers],
           body: rows,
@@ -505,7 +583,7 @@ function App() {
           theme: 'grid',
           headStyles: { fillColor: [25, 35, 29] }
         });
-        doc.save(`FinIntel_Statement_${new Date().toISOString().split('T')[0]}.pdf`);
+        doc.save(`FinIntel_Statement_${baseCurrency}_${new Date().toISOString().split('T')[0]}.pdf`);
         showToast('Exported PDF statement');
       }
     } catch (e) {
@@ -1164,23 +1242,28 @@ function App() {
                OVERVIEW DASHBOARD: The 5 Core Investor Questions Answered
                ========================================================================== */
             <div className="dashboard-grid">
-              {/* Question 1 & 2: Valuation, Cost Basis, Buying Power & Risk Node */}
+              {/* Question 1 & 2: Multi-Currency Valuation, Cost Basis, Buying Power & Risk Node */}
               <div className="dashboard-span-12">
                 <div className="portfolio-summary-bar">
                   <div className="summary-metric-card">
-                    <span className="summary-metric-label">Portfolio Valuation</span>
+                    <span className="summary-metric-label">Portfolio Valuation ({baseCurrency})</span>
                     <span className="summary-metric-value">
-                      ${totalPortfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {baseCurSymbol}{totalPortfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                     <span className={`summary-metric-sub ${totalUnrealizedPnL >= 0 ? 'pos' : 'neg'}`}>
-                      {totalUnrealizedPnL >= 0 ? '+' : ''}${totalUnrealizedPnL.toFixed(2)} ({totalUnrealizedPnLPercent.toFixed(1)}% All-Time)
+                      {totalUnrealizedPnL >= 0 ? '+' : ''}{baseCurSymbol}{totalUnrealizedPnL.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({totalUnrealizedPnLPercent.toFixed(1)}% All-Time)
                     </span>
+                    {portfolio.length > 0 && (
+                      <span className="font-mono" style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                        ≈ {altCurSymbol}{totalPortfolioValueAlt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {altCurrency}
+                      </span>
+                    )}
                   </div>
 
                   <div className="summary-metric-card">
-                    <span className="summary-metric-label">Cost Basis</span>
+                    <span className="summary-metric-label">Cost Basis ({baseCurrency})</span>
                     <span className="summary-metric-value">
-                      ${totalCostBasis.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {baseCurSymbol}{totalCostBasis.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                     <span className="summary-metric-sub neutral">
                       {portfolio.length} Active Positions
@@ -1190,10 +1273,10 @@ function App() {
                   <div className="summary-metric-card">
                     <span className="summary-metric-label">Virtual Buying Power</span>
                     <span className="summary-metric-value" style={{ color: 'var(--accent)' }}>
-                      ${virtualBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {baseCurSymbol}{virtualBalanceBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                     <span className="summary-metric-sub neutral">
-                      Paper Simulator Capital
+                      {baseCurrency === 'INR' ? `$${virtualBalance.toFixed(2)} USD Paper Capital` : 'Paper Simulator Capital'}
                     </span>
                   </div>
 
@@ -1209,7 +1292,7 @@ function App() {
                 </div>
               </div>
 
-              {/* Question 3 & 4: Concise Holdings Table with Numeric Alignment (Span 8) */}
+              {/* Question 3 & 4: Multi-Currency Holdings Table with Dynamic Currency Alignment (Span 8) */}
               <div className="terminal-panel dashboard-span-8">
                 <div className="panel-header">
                   <div>
@@ -1218,22 +1301,50 @@ function App() {
                       Real Portfolio Holdings
                     </h2>
                     <span className="panel-subtitle">
-                      Live positions, cost basis, mark-to-market valuations, and net unrealized returns
+                      Live positions, cost basis, mark-to-market valuations, and multi-currency FX normalization
                     </span>
                   </div>
 
-                  {portfolio.length > 0 && (
-                    <div style={{ display: 'flex', gap: '6px' }}>
-                      <button onClick={() => exportPortfolio('csv')} className="btn btn-secondary btn-sm">
-                        <Download size={13} />
-                        <span>CSV</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    {/* Live FX Rate Pill */}
+                    <div className="fx-rate-pill" title="Live USD/INR Exchange Rate">
+                      <Globe size={12} color="var(--accent)" />
+                      <span className="font-mono" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                        1 USD = ₹{fxRate.toFixed(2)}
+                      </span>
+                    </div>
+
+                    {/* Currency Toggle */}
+                    <div className="currency-toggle-group" title="Select Portfolio Base Currency">
+                      <button
+                        type="button"
+                        className={`currency-toggle-btn ${baseCurrency === 'USD' ? 'active' : ''}`}
+                        onClick={() => toggleBaseCurrency('USD')}
+                      >
+                        USD ($)
                       </button>
-                      <button onClick={() => exportPortfolio('pdf')} className="btn btn-secondary btn-sm">
-                        <Download size={13} />
-                        <span>PDF</span>
+                      <button
+                        type="button"
+                        className={`currency-toggle-btn ${baseCurrency === 'INR' ? 'active' : ''}`}
+                        onClick={() => toggleBaseCurrency('INR')}
+                      >
+                        INR (₹)
                       </button>
                     </div>
-                  )}
+
+                    {portfolio.length > 0 && (
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <button onClick={() => exportPortfolio('csv')} className="btn btn-secondary btn-sm">
+                          <Download size={13} />
+                          <span>CSV</span>
+                        </button>
+                        <button onClick={() => exportPortfolio('pdf')} className="btn btn-secondary btn-sm">
+                          <Download size={13} />
+                          <span>PDF</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {portfolioHoldingsWithPnL.length > 0 ? (
@@ -1252,29 +1363,39 @@ function App() {
                       </thead>
                       <tbody>
                         {portfolioHoldingsWithPnL.map((p) => {
-                          const isPos = p.pnlDollar >= 0;
+                          const isPos = p.pnlNative >= 0;
                           return (
                             <tr key={p._id}>
                               <td>
-                                <span
-                                  className="font-mono"
-                                  style={{ fontWeight: '700', color: 'var(--accent)', cursor: 'pointer' }}
-                                  onClick={() => fetchStockData(p.symbol)}
-                                  title="Inspect Stock Chart"
-                                >
-                                  {p.symbol}
-                                </span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span
+                                    className="font-mono"
+                                    style={{ fontWeight: '700', color: 'var(--accent)', cursor: 'pointer' }}
+                                    onClick={() => fetchStockData(p.symbol)}
+                                    title="Inspect Stock Chart"
+                                  >
+                                    {p.symbol}
+                                  </span>
+                                  <span className="term-badge neutral" style={{ fontSize: '0.62rem', padding: '1px 4px' }}>
+                                    {p.nativeCurrency}
+                                  </span>
+                                </div>
                               </td>
                               <td className="num-col font-mono">{p.qty} shrs</td>
-                              <td className="num-col font-mono">${p.entryPrice.toFixed(2)}</td>
-                              <td className="num-col font-mono">${p.currPrice.toFixed(2)}</td>
+                              <td className="num-col font-mono">{p.nativeSymbol}{p.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                              <td className="num-col font-mono">{p.nativeSymbol}{p.currPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                               <td className="num-col font-mono" style={{ fontWeight: '600' }}>
-                                ${p.currentVal.toFixed(2)}
+                                <div>{p.nativeSymbol}{p.currentValNative.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                                {p.nativeCurrency !== baseCurrency && (
+                                  <div style={{ fontSize: '0.68rem', fontWeight: '400', color: 'var(--text-tertiary)' }}>
+                                    ≈ {baseCurSymbol}{p.currentValBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </div>
+                                )}
                               </td>
                               <td className="num-col font-mono">
                                 <span className={`term-badge ${isPos ? 'pos' : 'neg'}`}>
                                   {isPos ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                                  {isPos ? '+' : ''}${p.pnlDollar.toFixed(2)} ({p.pnlPercent.toFixed(1)}%)
+                                  {isPos ? '+' : ''}{p.nativeSymbol}{Math.abs(p.pnlNative).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({p.pnlPercent.toFixed(1)}%)
                                 </span>
                               </td>
                               <td style={{ textAlign: 'right' }}>
@@ -1462,7 +1583,7 @@ function App() {
                     Simulated Paper Positions
                   </h3>
                   <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                    ${virtualBalance.toFixed(2)} Cash
+                    ${virtualBalance.toFixed(2)} USD Cash{baseCurrency === 'INR' ? ` (≈ ₹${(virtualBalance * fxRate).toLocaleString(undefined, { maximumFractionDigits: 0 })})` : ''}
                   </span>
                 </div>
 
@@ -1486,7 +1607,7 @@ function App() {
                               </span>
                             </td>
                             <td className="num-col font-mono">{p.qty}</td>
-                            <td className="num-col font-mono">${parseFloat(p.price).toFixed(2)}</td>
+                            <td className="num-col font-mono">{getCurrency(p.symbol)}{parseFloat(p.price).toFixed(2)}</td>
                             <td style={{ textAlign: 'right' }}>
                                 <button
                                 className="btn btn-danger btn-sm"
@@ -1500,7 +1621,7 @@ function App() {
                                   });
                                   fetchPaperPortfolio(user.uid);
                                   fetchVirtualBalance(user.uid);
-                                  showToast(`Closed ${p.symbol} position at $${closePrice.toFixed(2)}`);
+                                  showToast(`Closed ${p.symbol} position at ${getCurrency(p.symbol)}${closePrice.toFixed(2)}`);
                                 }}
                               >
                                 Close

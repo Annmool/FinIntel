@@ -663,6 +663,50 @@ button {
   font-size: 0.75rem;
 }
 
+/* Multi-Currency FX Engine Toggle & Badges */
+.currency-toggle-group {
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.currency-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.currency-toggle-btn:hover {
+  color: var(--text-primary);
+}
+
+.currency-toggle-btn.active {
+  background: var(--accent);
+  color: #0b140e;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.fx-rate-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+}
+
 /* Financial Tables */
 .terminal-table-container {
   width: 100%;

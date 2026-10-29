@@ -474,6 +474,34 @@ app.delete('/api/portfolio/:id', async (req, res) => {
     res.send("Deleted");
 });
 
+// --- Forex FX Rate Engine (Yahoo Finance USDINR=X with Cache & Fallback) ---
+async function getUsdInrRate() {
+    const cached = myCache.get('USD_INR_RATE');
+    if (cached && typeof cached === 'number' && cached > 0) return cached;
+
+    try {
+        const quote = await yahooFinance.quote('USDINR=X');
+        const rate = quote?.regularMarketPrice;
+        if (Number.isFinite(rate) && rate > 50 && rate < 150) {
+            myCache.set('USD_INR_RATE', rate, 300); // Cache for 5 minutes
+            return rate;
+        }
+    } catch (e) {
+        console.warn("Could not fetch USDINR=X quote from Yahoo Finance:", e.message);
+    }
+    return 86.80; // High-precision current market baseline
+}
+
+// Forex Rate Endpoint
+app.get('/api/forex/rate', async (req, res) => {
+    try {
+        const rate = await getUsdInrRate();
+        res.json({ base: 'USD', target: 'INR', rate, timestamp: new Date().toISOString() });
+    } catch (e) {
+        res.json({ base: 'USD', target: 'INR', rate: 86.80, timestamp: new Date().toISOString() });
+    }
+});
+
 // Paper Trading: Get Holdings
 app.get('/api/paper-portfolio/:userId', async (req, res) => {
     const holdings = await PaperPortfolio.find({ userId: req.params.userId });
@@ -490,7 +518,7 @@ app.get('/api/virtual-account/:userId', async (req, res) => {
     res.json(account);
 });
 
-// Paper Trading: Buy
+// Paper Trading: Buy (Handles multi-currency normalized against USD balance)
 app.post('/api/paper-portfolio/buy', async (req, res) => {
     const { userId, symbol, qty, price } = req.body;
     const parsedQty = parseFloat(qty);
@@ -500,7 +528,12 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
         return res.status(400).json({ error: "Invalid order parameters. Quantity and price must be positive numbers." });
     }
 
-    const totalCost = Number((parsedQty * parsedPrice).toFixed(2));
+    const cleanSymbol = symbol.trim().toUpperCase();
+    const isIndian = cleanSymbol.endsWith('.NS') || cleanSymbol.endsWith('.BO');
+    const fxRate = await getUsdInrRate();
+    const totalCostNative = Number((parsedQty * parsedPrice).toFixed(2));
+    // Normalize into USD virtual account balance
+    const totalCostUsd = isIndian ? Number((totalCostNative / fxRate).toFixed(2)) : totalCostNative;
 
     let account = await VirtualAccount.findOne({ userId });
     if (!account) {
@@ -508,28 +541,30 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
         await account.save();
     }
 
-    if (account.balance < totalCost) {
-        return res.status(400).json({ error: "Insufficient virtual funds" });
+    if (account.balance < totalCostUsd) {
+        return res.status(400).json({ 
+            error: `Insufficient virtual funds. Cost: $${totalCostUsd.toFixed(2)} USD${isIndian ? ` (₹${totalCostNative.toFixed(2)} at ₹${fxRate.toFixed(2)}/$)` : ''}, Available: $${account.balance.toFixed(2)}` 
+        });
     }
 
-    account.balance = Number((account.balance - totalCost).toFixed(2));
+    account.balance = Number((account.balance - totalCostUsd).toFixed(2));
     await account.save();
 
-    let holding = await PaperPortfolio.findOne({ userId, symbol: symbol.toUpperCase() });
+    let holding = await PaperPortfolio.findOne({ userId, symbol: cleanSymbol });
     if (holding) {
         const oldTotal = holding.qty * holding.price;
         holding.qty += parsedQty;
-        holding.price = (oldTotal + totalCost) / holding.qty;
+        holding.price = (oldTotal + totalCostNative) / holding.qty;
         await holding.save();
     } else {
-        holding = new PaperPortfolio({ userId, symbol: symbol.toUpperCase(), qty: parsedQty, price: parsedPrice });
+        holding = new PaperPortfolio({ userId, symbol: cleanSymbol, qty: parsedQty, price: parsedPrice });
         await holding.save();
     }
     
-    res.json({ holding, balance: account.balance });
+    res.json({ holding, balance: account.balance, fxRate });
 });
 
-// Paper Trading: Sell
+// Paper Trading: Sell (Handles multi-currency normalized against USD balance)
 app.post('/api/paper-portfolio/sell', async (req, res) => {
     const { userId, symbol, qty, price } = req.body;
     const parsedQty = parseFloat(qty);
@@ -538,18 +573,23 @@ app.post('/api/paper-portfolio/sell', async (req, res) => {
     if (!userId || !symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
         return res.status(400).json({ error: "Invalid order parameters. Quantity and price must be positive numbers." });
     }
-    
-    let holding = await PaperPortfolio.findOne({ userId, symbol: symbol.toUpperCase() });
+
+    const cleanSymbol = symbol.trim().toUpperCase();
+    let holding = await PaperPortfolio.findOne({ userId, symbol: cleanSymbol });
     if (!holding || holding.qty < parsedQty) {
         return res.status(400).json({ error: "Not enough shares to sell" });
     }
 
-    const totalRevenue = Number((parsedQty * parsedPrice).toFixed(2));
+    const isIndian = cleanSymbol.endsWith('.NS') || cleanSymbol.endsWith('.BO');
+    const fxRate = await getUsdInrRate();
+    const totalRevenueNative = Number((parsedQty * parsedPrice).toFixed(2));
+    const totalRevenueUsd = isIndian ? Number((totalRevenueNative / fxRate).toFixed(2)) : totalRevenueNative;
+
     let account = await VirtualAccount.findOne({ userId });
     if (!account) {
         account = new VirtualAccount({ userId, balance: 100000 });
     }
-    account.balance = Number((account.balance + totalRevenue).toFixed(2));
+    account.balance = Number((account.balance + totalRevenueUsd).toFixed(2));
     await account.save();
 
     holding.qty = Number((holding.qty - parsedQty).toFixed(4));
@@ -560,12 +600,7 @@ app.post('/api/paper-portfolio/sell', async (req, res) => {
         await holding.save();
     }
 
-    res.json({ holding, balance: account.balance });
-});
-
-app.delete('/api/portfolio/:id', async (req, res) => {
-    await Portfolio.findByIdAndDelete(req.params.id);
-    res.send("Deleted");
+    res.json({ holding, balance: account.balance, fxRate });
 });
 
 // Curated Multi-Market Screener Universe (US Tech, Mega-Caps, Indian NSE Bluechips)
