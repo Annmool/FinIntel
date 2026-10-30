@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 
 import { API_URL } from './apiConfig';
+import { getCurrencySymbol, formatPrice } from './utils/currency';
 
 const TickerTape = () => {
     const [stocks, setStocks] = useState(() => {
@@ -26,12 +27,10 @@ const TickerTape = () => {
     }, []);
 
     const renderStockItems = (copy) => stocks.map((s, i) => {
-        const price = s.close ? parseFloat(s.close).toFixed(2) : "0.00";
+        const cur = getCurrencySymbol(s.currency || s.symbol);
+        const price = s.close ? formatPrice(s.close, s.currency || s.symbol) : "0.00";
         const change = s.percent_change ? parseFloat(s.percent_change).toFixed(2) : "0.00";
         const isPositive = parseFloat(change) >= 0;
-
-        const isIndian = s.symbol?.endsWith('.NS') || s.symbol?.endsWith('.BO');
-        const cur = isIndian ? '₹' : '$';
 
         return (
             <div className="ticker-item" key={`${copy}-${s.symbol}-${i}`}>

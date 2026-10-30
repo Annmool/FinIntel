@@ -36,6 +36,14 @@ import StockChart from './StockChart';
 import TickerTape from './TickerTape';
 import QuantLab from './QuantLab';
 import { calculateRSI } from './utils/indicators';
+import {
+  DEFAULT_FX_RATES,
+  inferCurrencyFromSymbol,
+  getCurrencySymbol,
+  formatPrice,
+  convertPrice,
+  formatLargeCap
+} from './utils/currency';
 import { auth, provider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 
@@ -67,6 +75,7 @@ function App() {
   const [isQuantLabOpen, setIsQuantLabOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'markets' | 'portfolio' | 'screener' | 'academy'
   const [portfolioPrices, setPortfolioPrices] = useState({});
+  const [fxRates, setFxRates] = useState(DEFAULT_FX_RATES);
   const [fxRate, setFxRate] = useState(86.80);
   const [baseCurrency, setBaseCurrency] = useState(() => {
     try {
@@ -86,12 +95,12 @@ function App() {
   const searchInputRef = useRef(null);
   const searchContainerRef = useRef(null);
 
-  const isIndianSymbol = (sym) => Boolean(sym?.endsWith('.NS') || sym?.endsWith('.BO'));
-  const getCurrency = (sym) => (isIndianSymbol(sym) ? '₹' : '$');
-  const currencySymbol = getCurrency(data?.meta?.symbol);
-  const baseCurSymbol = baseCurrency === 'USD' ? '$' : '₹';
+  const getCurrency = (symOrCode) => getCurrencySymbol(symOrCode);
+  const stockCurrency = data?.meta?.currency || inferCurrencyFromSymbol(data?.meta?.symbol || symbol);
+  const currencySymbol = getCurrencySymbol(stockCurrency);
+  const baseCurSymbol = getCurrencySymbol(baseCurrency);
   const altCurrency = baseCurrency === 'USD' ? 'INR' : 'USD';
-  const altCurSymbol = baseCurrency === 'USD' ? '₹' : '$';
+  const altCurSymbol = getCurrencySymbol(altCurrency);
 
   // Global Ctrl+K / Cmd+K Search Hotkey
   useEffect(() => {
@@ -217,6 +226,9 @@ function App() {
         .then(res => {
           if (res.data?.rate && Number.isFinite(parseFloat(res.data.rate))) {
             setFxRate(parseFloat(res.data.rate));
+          }
+          if (res.data?.rates) {
+            setFxRates(prev => ({ ...prev, ...res.data.rates }));
           }
         })
         .catch(() => {});
@@ -386,11 +398,13 @@ function App() {
         showToast(`Recorded ${qty} shares in Portfolio`);
       }
     } else if (type === 'BUY') {
-      const isIndian = isIndianSymbol(data?.meta?.symbol);
+      const stockCur = data?.meta?.currency || inferCurrencyFromSymbol(data?.meta?.symbol);
+      const stockCurSym = getCurrencySymbol(stockCur);
       const priceNative = parseFloat(data?.values[0].close);
-      const priceUsd = isIndian ? priceNative / fxRate : priceNative;
-      const promptText = isIndian
-        ? `Paper Order: Buy ${data?.meta?.symbol}\nMarket Price: ₹${priceNative.toFixed(2)} (~$${priceUsd.toFixed(2)} USD at ₹${fxRate.toFixed(2)}/$)\nAvailable Cash: $${virtualBalance.toFixed(2)} USD (≈ ₹${(virtualBalance * fxRate).toLocaleString(undefined, { maximumFractionDigits: 0 })})\nShares to BUY:`
+      const priceUsd = convertPrice(priceNative, stockCur, 'USD', fxRates);
+      const fxRateDisplay = fxRates[stockCur] || 1;
+      const promptText = stockCur !== 'USD'
+        ? `Paper Order: Buy ${data?.meta?.symbol}\nMarket Price: ${stockCurSym}${formatPrice(priceNative, stockCur)} ${stockCur} (~$${priceUsd.toFixed(2)} USD at ${stockCurSym}${formatPrice(fxRateDisplay, stockCur)}/$)\nAvailable Cash: $${virtualBalance.toFixed(2)} USD\nShares to BUY:`
         : `Paper Order: Buy ${data?.meta?.symbol}\nMarket Price: $${priceNative.toFixed(2)}\nAvailable Cash: $${virtualBalance.toFixed(2)} USD\nShares to BUY:`;
       const qtyStr = prompt(promptText);
       if (qtyStr && !isNaN(qtyStr) && parseFloat(qtyStr) > 0) {
@@ -400,7 +414,8 @@ function App() {
             userId: currUser.uid,
             symbol: data?.meta?.symbol,
             qty,
-            price: priceNative
+            price: priceNative,
+            currency: stockCur
           });
           setVirtualBalance(res.data.balance);
           fetchPaperPortfolio(currUser.uid);
@@ -410,11 +425,12 @@ function App() {
         }
       }
     } else if (type === 'SELL') {
-      const isIndian = isIndianSymbol(data?.meta?.symbol);
+      const stockCur = data?.meta?.currency || inferCurrencyFromSymbol(data?.meta?.symbol);
+      const stockCurSym = getCurrencySymbol(stockCur);
       const priceNative = parseFloat(data?.values[0].close);
-      const priceUsd = isIndian ? priceNative / fxRate : priceNative;
-      const promptText = isIndian
-        ? `Paper Order: Sell ${data?.meta?.symbol}\nMarket Price: ₹${priceNative.toFixed(2)} (~$${priceUsd.toFixed(2)} USD)\nEnter shares to SELL:`
+      const priceUsd = convertPrice(priceNative, stockCur, 'USD', fxRates);
+      const promptText = stockCur !== 'USD'
+        ? `Paper Order: Sell ${data?.meta?.symbol}\nMarket Price: ${stockCurSym}${formatPrice(priceNative, stockCur)} ${stockCur} (~$${priceUsd.toFixed(2)} USD)\nEnter shares to SELL:`
         : `Paper Order: Sell ${data?.meta?.symbol}\nMarket Price: $${priceNative.toFixed(2)}\nEnter shares to SELL:`;
       const qtyStr = prompt(promptText);
       if (qtyStr && !isNaN(qtyStr) && parseFloat(qtyStr) > 0) {
@@ -424,7 +440,8 @@ function App() {
             userId: currUser.uid,
             symbol: data?.meta?.symbol,
             qty,
-            price: data?.values[0].close
+            price: data?.values[0].close,
+            currency: stockCur
           });
           setVirtualBalance(res.data.balance);
           fetchPaperPortfolio(currUser.uid);
@@ -434,13 +451,15 @@ function App() {
         }
       }
     } else if (type === 'ALERT') {
+      const stockCur = data?.meta?.currency || inferCurrencyFromSymbol(data?.meta?.symbol);
+      const stockCurSym = getCurrencySymbol(stockCur);
+      const closePrice = parseFloat(data?.values[0].close);
       const targetPriceStr = prompt(
-        `Set Alert for ${data?.meta?.symbol}\nCurrent Price: ${currencySymbol}${parseFloat(data?.values[0].close).toFixed(2)}\nTarget Price trigger:`
+        `Set Alert for ${data?.meta?.symbol}\nCurrent Price: ${stockCurSym}${formatPrice(closePrice, stockCur)} ${stockCur}\nTarget Price trigger:`
       );
       if (targetPriceStr && !isNaN(targetPriceStr) && parseFloat(targetPriceStr) > 0) {
         const targetPrice = parseFloat(targetPriceStr);
-        const currentPrice = parseFloat(data?.values[0].close);
-        const condition = targetPrice > currentPrice ? 'ABOVE' : 'BELOW';
+        const condition = targetPrice > closePrice ? 'ABOVE' : 'BELOW';
         await axios.post(`${API_URL}/api/alerts`, {
           userId: currUser.uid,
           symbol: data?.meta?.symbol,
@@ -448,7 +467,7 @@ function App() {
           condition
         });
         fetchAlerts(currUser.uid);
-        showToast(`Alert registered: ${data?.meta?.symbol} ${condition} ${currencySymbol}${targetPrice}`);
+        showToast(`Alert registered: ${data?.meta?.symbol} ${condition} ${stockCurSym}${formatPrice(targetPrice, stockCur)}`);
       }
     }
   };
@@ -456,9 +475,11 @@ function App() {
   const getAIInsight = async () => {
     setAiLoading(true);
     try {
+      const stockCur = data?.meta?.currency || inferCurrencyFromSymbol(data?.meta?.symbol);
       const res = await axios.post(`${API_URL}/api/ai-analysis`, {
         symbol: data?.meta?.symbol,
         price: data?.values[0].close,
+        currency: stockCur,
         rsi: calculateRSI(data.values),
         sentiment: avgSent > 0 ? 'Bullish' : 'Bearish',
         news: news
@@ -482,9 +503,8 @@ function App() {
 
   // Calculate Real Portfolio Metrics with Multi-Currency FX Engine
   const portfolioHoldingsWithPnL = portfolio.map((p) => {
-    const isIndian = isIndianSymbol(p.symbol);
-    const nativeCurrency = isIndian ? 'INR' : 'USD';
-    const nativeSymbol = isIndian ? '₹' : '$';
+    const nativeCurrency = p.currency || inferCurrencyFromSymbol(p.symbol);
+    const nativeSymbol = getCurrencySymbol(nativeCurrency);
 
     const currPrice = portfolioPrices[p.symbol] || parseFloat(p.price || 0);
     const entryPrice = parseFloat(p.price || 0);
@@ -494,11 +514,11 @@ function App() {
     const pnlNative = currentValNative - costBasisNative;
     const pnlPercent = costBasisNative > 0 ? (pnlNative / costBasisNative) * 100 : 0;
 
-    // Convert values to both USD and INR
-    const currentValUSD = isIndian ? (currentValNative / fxRate) : currentValNative;
-    const currentValINR = isIndian ? currentValNative : (currentValNative * fxRate);
-    const costBasisUSD = isIndian ? (costBasisNative / fxRate) : costBasisNative;
-    const costBasisINR = isIndian ? costBasisNative : (costBasisNative * fxRate);
+    // Convert values to both USD and INR using the global FX engine
+    const currentValUSD = convertPrice(currentValNative, nativeCurrency, 'USD', fxRates);
+    const currentValINR = convertPrice(currentValNative, nativeCurrency, 'INR', fxRates);
+    const costBasisUSD = convertPrice(costBasisNative, nativeCurrency, 'USD', fxRates);
+    const costBasisINR = convertPrice(costBasisNative, nativeCurrency, 'INR', fxRates);
     const pnlUSD = currentValUSD - costBasisUSD;
     const pnlINR = currentValINR - costBasisINR;
 
@@ -510,7 +530,7 @@ function App() {
 
     return {
       ...p,
-      isIndian,
+      isIndian: nativeCurrency === 'INR',
       nativeCurrency,
       nativeSymbol,
       currPrice,
@@ -537,8 +557,8 @@ function App() {
   const totalUnrealizedPnLPercent = totalCostBasis > 0 ? (totalUnrealizedPnL / totalCostBasis) * 100 : 0;
 
   // Secondary alternative currency representation
-  const totalPortfolioValueAlt = baseCurrency === 'USD' ? (totalPortfolioValue * fxRate) : (totalPortfolioValue / fxRate);
-  const virtualBalanceBase = baseCurrency === 'USD' ? virtualBalance : (virtualBalance * fxRate);
+  const totalPortfolioValueAlt = convertPrice(totalPortfolioValue, baseCurrency, altCurrency, fxRates);
+  const virtualBalanceBase = convertPrice(virtualBalance, 'USD', baseCurrency, fxRates);
 
   // Export Portfolio
   const exportPortfolio = async (type) => {
@@ -553,11 +573,11 @@ function App() {
       const rows = portfolioHoldingsWithPnL.map((p) => [
         p.symbol,
         p.qty.toString(),
-        `${p.nativeSymbol}${p.entryPrice.toFixed(2)}`,
-        `${p.nativeSymbol}${p.currPrice.toFixed(2)}`,
-        `${p.nativeSymbol}${p.currentValNative.toFixed(2)}`,
-        `${baseCurSymbol}${p.currentValBase.toFixed(2)}`,
-        `${p.pnlNative >= 0 ? '+' : ''}${p.nativeSymbol}${p.pnlNative.toFixed(2)} (${p.pnlPercent.toFixed(1)}%)`
+        `${p.nativeSymbol}${formatPrice(p.entryPrice, p.nativeCurrency)}`,
+        `${p.nativeSymbol}${formatPrice(p.currPrice, p.nativeCurrency)}`,
+        `${p.nativeSymbol}${formatPrice(p.currentValNative, p.nativeCurrency)}`,
+        `${baseCurSymbol}${formatPrice(p.currentValBase, baseCurrency)}`,
+        `${p.pnlNative >= 0 ? '+' : ''}${p.nativeSymbol}${formatPrice(p.pnlNative, p.nativeCurrency)} (${p.pnlPercent.toFixed(1)}%)`
       ]);
 
       if (type === 'csv') {
@@ -788,7 +808,7 @@ function App() {
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <span className="sidebar-item-sym" style={{ fontSize: '0.78rem' }}>{a.symbol}</span>
                   <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>
-                    {a.condition} {getCurrency(a.symbol)}{a.targetPrice}
+                    {a.condition} {getCurrency(a.symbol)}{formatPrice(a.targetPrice, a.symbol)}
                   </span>
                 </div>
                 <button
@@ -1088,11 +1108,19 @@ function App() {
                 {/* Header Information & Action Toolbar */}
                 <div className="stock-view-header">
                   <div>
-                    <div className="stock-symbol-large">
+                    <div className="stock-symbol-large" style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '8px' }}>
                       <span>{data?.meta?.symbol || symbol}</span>
                       <span className="stock-price-large font-mono">
-                        {currencySymbol}{parseFloat(data?.values?.[0]?.close || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {currencySymbol}{formatPrice(data?.values?.[0]?.close || 0, stockCurrency)}
+                        <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)', marginLeft: '6px', fontWeight: '500' }}>
+                          {stockCurrency}
+                        </span>
                       </span>
+                      {stockCurrency !== baseCurrency && (
+                        <span className="term-badge neutral font-mono" style={{ fontSize: '0.8rem', padding: '2px 8px' }}>
+                          ≈ {baseCurSymbol}{formatPrice(convertPrice(data?.values?.[0]?.close || 0, stockCurrency, baseCurrency, fxRates), baseCurrency)} {baseCurrency}
+                        </span>
+                      )}
                     </div>
                     <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
                       Last Updated: {data?.values?.[0]?.datetime || 'Live'}
@@ -1154,7 +1182,7 @@ function App() {
                     <div className="stock-stat-box">
                       <span className="stock-stat-label">Market Cap</span>
                       <span className="stock-stat-val font-mono">
-                        {currencySymbol}{(data.fundamentals.profile.marketCapitalization / 1000).toFixed(2)}B
+                        {formatLargeCap(data.fundamentals.profile.marketCapitalization * 1000000, stockCurrency)}
                       </span>
                     </div>
                   )}
@@ -1170,7 +1198,7 @@ function App() {
                     <div className="stock-stat-box">
                       <span className="stock-stat-label">52W Range</span>
                       <span className="stock-stat-val font-mono" style={{ fontSize: '0.85rem' }}>
-                        {currencySymbol}{data.fundamentals.metrics['52WeekLow']?.toFixed(1)} - {currencySymbol}{data.fundamentals.metrics['52WeekHigh']?.toFixed(1)}
+                        {currencySymbol}{formatPrice(data.fundamentals.metrics['52WeekLow'], stockCurrency, { maxDecimals: 1 })} - {currencySymbol}{formatPrice(data.fundamentals.metrics['52WeekHigh'], stockCurrency, { maxDecimals: 1 })}
                       </span>
                     </div>
                   )}
@@ -1382,20 +1410,20 @@ function App() {
                                 </div>
                               </td>
                               <td className="num-col font-mono">{p.qty} shrs</td>
-                              <td className="num-col font-mono">{p.nativeSymbol}{p.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                              <td className="num-col font-mono">{p.nativeSymbol}{p.currPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                              <td className="num-col font-mono">{p.nativeSymbol}{formatPrice(p.entryPrice, p.nativeCurrency)}</td>
+                              <td className="num-col font-mono">{p.nativeSymbol}{formatPrice(p.currPrice, p.nativeCurrency)}</td>
                               <td className="num-col font-mono" style={{ fontWeight: '600' }}>
-                                <div>{p.nativeSymbol}{p.currentValNative.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                                <div>{p.nativeSymbol}{formatPrice(p.currentValNative, p.nativeCurrency)}</div>
                                 {p.nativeCurrency !== baseCurrency && (
                                   <div style={{ fontSize: '0.68rem', fontWeight: '400', color: 'var(--text-tertiary)' }}>
-                                    ≈ {baseCurSymbol}{p.currentValBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    ≈ {baseCurSymbol}{formatPrice(p.currentValBase, baseCurrency)}
                                   </div>
                                 )}
                               </td>
                               <td className="num-col font-mono">
                                 <span className={`term-badge ${isPos ? 'pos' : 'neg'}`}>
                                   {isPos ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                                  {isPos ? '+' : ''}{p.nativeSymbol}{Math.abs(p.pnlNative).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({p.pnlPercent.toFixed(1)}%)
+                                  {isPos ? '+' : ''}{p.nativeSymbol}{formatPrice(Math.abs(p.pnlNative), p.nativeCurrency)} ({p.pnlPercent.toFixed(1)}%)
                                 </span>
                               </td>
                               <td style={{ textAlign: 'right' }}>
@@ -1607,21 +1635,23 @@ function App() {
                               </span>
                             </td>
                             <td className="num-col font-mono">{p.qty}</td>
-                            <td className="num-col font-mono">{getCurrency(p.symbol)}{parseFloat(p.price).toFixed(2)}</td>
+                            <td className="num-col font-mono">{getCurrencySymbol(p.currency || p.symbol)}{formatPrice(p.price, p.currency || p.symbol)}</td>
                             <td style={{ textAlign: 'right' }}>
                                 <button
                                 className="btn btn-danger btn-sm"
                                 onClick={async () => {
                                   const closePrice = portfolioPrices[p.symbol] || parseFloat(p.price);
+                                  const pCur = p.currency || inferCurrencyFromSymbol(p.symbol);
                                   await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
                                     userId: user.uid,
                                     symbol: p.symbol,
                                     qty: p.qty,
-                                    price: closePrice
+                                    price: closePrice,
+                                    currency: pCur
                                   });
                                   fetchPaperPortfolio(user.uid);
                                   fetchVirtualBalance(user.uid);
-                                  showToast(`Closed ${p.symbol} position at ${getCurrency(p.symbol)}${closePrice.toFixed(2)}`);
+                                  showToast(`Closed ${p.symbol} position at ${getCurrencySymbol(pCur)}${formatPrice(closePrice, pCur)}`);
                                 }}
                               >
                                 Close

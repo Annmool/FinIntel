@@ -3,6 +3,7 @@ import axios from 'axios';
 import { ArrowLeft, Activity, ArrowUpRight, ArrowDownRight, Search, RefreshCw } from 'lucide-react';
 
 import { API_URL } from './apiConfig';
+import { getCurrencySymbol, formatPrice, formatLargeCap } from './utils/currency';
 
 function Screener({ onClose, onSelectSymbol }) {
     const [filterType, setFilterType] = useState('day_gainers');
@@ -33,8 +34,7 @@ function Screener({ onClose, onSelectSymbol }) {
 
     const getSymbolCurrency = (s) => {
         if (!s) return '$';
-        if (s.currency === 'INR' || s.symbol?.endsWith('.NS') || s.symbol?.endsWith('.BO')) return '₹';
-        return '$';
+        return getCurrencySymbol(s.currency || s.symbol);
     };
 
     const formatVolume = (vol) => {
@@ -46,11 +46,7 @@ function Screener({ onClose, onSelectSymbol }) {
     };
 
     const formatCap = (cap, cur) => {
-        if (!Number.isFinite(cap) || cap <= 0) return '--';
-        if (cap >= 1e12) return `${cur}${(cap / 1e12).toFixed(2)}T`;
-        if (cap >= 1e9) return `${cur}${(cap / 1e9).toFixed(1)}B`;
-        if (cap >= 1e6) return `${cur}${(cap / 1e6).toFixed(1)}M`;
-        return `${cur}${cap.toFixed(0)}`;
+        return formatLargeCap(cap, cur);
     };
 
     const filteredStocks = stocks.filter(s => {
@@ -192,10 +188,11 @@ function Screener({ onClose, onSelectSymbol }) {
                                     const change = Number.isFinite(s.regularMarketChangePercent) ? s.regularMarketChangePercent : 0;
                                     const isPos = change >= 0;
                                     const cur = getSymbolCurrency(s);
-                                    const price = Number.isFinite(s.regularMarketPrice) ? `${cur}${s.regularMarketPrice.toFixed(2)}` : '--';
-                                    const high = Number.isFinite(s.regularMarketDayHigh) ? `${cur}${s.regularMarketDayHigh.toFixed(2)}` : null;
-                                    const low = Number.isFinite(s.regularMarketDayLow) ? `${cur}${s.regularMarketDayLow.toFixed(2)}` : null;
-                                    const mktCap = formatCap(s.marketCap, cur);
+                                    const curCode = s.currency || s.symbol;
+                                    const price = Number.isFinite(s.regularMarketPrice) ? `${cur}${formatPrice(s.regularMarketPrice, curCode)}` : '--';
+                                    const high = Number.isFinite(s.regularMarketDayHigh) ? `${cur}${formatPrice(s.regularMarketDayHigh, curCode)}` : null;
+                                    const low = Number.isFinite(s.regularMarketDayLow) ? `${cur}${formatPrice(s.regularMarketDayLow, curCode)}` : null;
+                                    const mktCap = formatCap(s.marketCap, curCode);
                                     const volume = formatVolume(s.regularMarketVolume);
                                     const pe = Number.isFinite(s.trailingPE) && s.trailingPE > 0 ? s.trailingPE.toFixed(1) : '--';
 
