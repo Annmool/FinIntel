@@ -27,6 +27,118 @@ const groq = new Groq({ apiKey: process.env.GROQ_KEY });
 const TWELVE_DATA_URL = "https://api.twelvedata.com";
 const FINNHUB_URL = "https://finnhub.io/api/v1";
 
+// --- Currency & FX Rate Dictionaries ---
+const CURRENCY_SYMBOLS = {
+    USD: '$',
+    INR: '₹',
+    KRW: '₩',
+    EUR: '€',
+    GBP: '£',
+    JPY: '¥',
+    AED: 'AED ',
+    SAR: 'SAR ',
+    QAR: 'QAR ',
+    KWD: 'KWD ',
+    BHD: 'BHD ',
+    OMR: 'OMR ',
+    ILS: '₪',
+    TRY: '₺',
+    ZAR: 'R',
+    CAD: 'CA$',
+    AUD: 'A$',
+    NZD: 'NZ$',
+    HKD: 'HK$',
+    CNY: '¥',
+    CHF: 'CHF ',
+    SGD: 'S$',
+    TWD: 'NT$',
+    BRL: 'R$',
+    MXN: 'Mex$',
+    SEK: 'kr ',
+    NOK: 'kr ',
+    DKK: 'kr ',
+    PLN: 'zł ',
+    IDR: 'Rp ',
+    MYR: 'RM ',
+    THB: '฿',
+    PHP: '₱',
+    VND: '₫'
+};
+
+const DEFAULT_FX_RATES = {
+    USD: 1.0,
+    AED: 3.6725,
+    SAR: 3.75,
+    QAR: 3.64,
+    KWD: 0.31,
+    INR: 86.80,
+    KRW: 1334.0,
+    EUR: 0.893,
+    GBP: 0.745,
+    JPY: 157.0,
+    CAD: 1.395,
+    AUD: 1.52,
+    HKD: 7.85,
+    CNY: 7.20,
+    CHF: 0.88,
+    SGD: 1.32,
+    TWD: 32.0,
+    BRL: 5.60
+};
+
+function inferCurrencyFromSymbol(sym) {
+    if (!sym || typeof sym !== 'string') return 'USD';
+    const s = sym.trim().toUpperCase();
+    // Middle East & GCC
+    if (s.endsWith('.AE') || s.endsWith('.DU') || s.endsWith('.AD')) return 'AED';
+    if (s.endsWith('.SR') || s.endsWith('.SAU')) return 'SAR';
+    if (s.endsWith('.QA')) return 'QAR';
+    if (s.endsWith('.KW')) return 'KWD';
+    if (s.endsWith('.BH')) return 'BHD';
+    if (s.endsWith('.OM')) return 'OMR';
+    if (s.endsWith('.TA')) return 'ILS';
+    if (s.endsWith('.IS')) return 'TRY';
+    if (s.endsWith('.CA')) return 'EGP';
+    // Asia
+    if (s.endsWith('.KS') || s.endsWith('.KQ')) return 'KRW';
+    if (s.endsWith('.NS') || s.endsWith('.BO')) return 'INR';
+    if (s.endsWith('.T')) return 'JPY';
+    if (s.endsWith('.HK')) return 'HKD';
+    if (s.endsWith('.SS') || s.endsWith('.SZ')) return 'CNY';
+    if (s.endsWith('.TW') || s.endsWith('.TWO')) return 'TWD';
+    if (s.endsWith('.SI')) return 'SGD';
+    if (s.endsWith('.JK')) return 'IDR';
+    if (s.endsWith('.KL')) return 'MYR';
+    if (s.endsWith('.BK')) return 'THB';
+    if (s.endsWith('.PS')) return 'PHP';
+    if (s.endsWith('.VN')) return 'VND';
+    // Europe & UK
+    if (s.endsWith('.L') || s.endsWith('.IL')) return 'GBP';
+    if (s.endsWith('.DE') || s.endsWith('.PA') || s.endsWith('.AS') || s.endsWith('.MI') || s.endsWith('.MC') || s.endsWith('.BR') || s.endsWith('.HE') || s.endsWith('.VI') || s.endsWith('.F') || s.endsWith('.AT')) return 'EUR';
+    if (s.endsWith('.SW')) return 'CHF';
+    if (s.endsWith('.ST')) return 'SEK';
+    if (s.endsWith('.OL')) return 'NOK';
+    if (s.endsWith('.CO')) return 'DKK';
+    if (s.endsWith('.WA')) return 'PLN';
+    // Americas & Oceania
+    if (s.endsWith('.TO') || s.endsWith('.V') || s.endsWith('.CN')) return 'CAD';
+    if (s.endsWith('.AX')) return 'AUD';
+    if (s.endsWith('.NZ')) return 'NZD';
+    if (s.endsWith('.SA')) return 'BRL';
+    if (s.endsWith('.MX')) return 'MXN';
+    if (s.endsWith('.JO')) return 'ZAR';
+    return 'USD';
+}
+
+function getCurrencySymbol(codeOrSym) {
+    if (!codeOrSym) return '$';
+    const upper = codeOrSym.toString().trim().toUpperCase();
+    if (CURRENCY_SYMBOLS[upper]) return CURRENCY_SYMBOLS[upper];
+    if (/^[A-Z]{3}$/.test(upper) && !upper.includes('.')) return `${upper} `;
+    const inferred = inferCurrencyFromSymbol(upper);
+    return CURRENCY_SYMBOLS[inferred] || `${inferred} `;
+}
+
 app.use(cors({
     origin: ["http://localhost:3000", "https://finintel.pages.dev"], 
     methods: ["GET", "POST", "PUT", "DELETE"],
@@ -74,8 +186,14 @@ const fetchFromYahoo = async (sym) => {
     const queryOptions = { period1: oneYearAgo.toISOString().split('T')[0], interval: '1d' };
     const result = await yahooFinance.chart(sym, queryOptions, { validateResult: false });
     if (!result || !result.quotes || result.quotes.length === 0) throw new Error("No data found on Yahoo Finance");
+    const currency = result.meta?.currency || inferCurrencyFromSymbol(sym);
     return {
-        meta: { symbol: sym },
+        meta: { 
+            symbol: sym,
+            currency: currency,
+            exchangeName: result.meta?.exchangeName || result.meta?.fullExchangeName,
+            regularMarketPrice: result.meta?.regularMarketPrice
+        },
         values: result.quotes.filter(q => q.open && q.close).map(q => ({
             datetime: q.date.toISOString().split('T')[0],
             open: q.open.toString(),
@@ -166,7 +284,7 @@ app.get('/api/stock/:symbol', async (req, res) => {
         const parts = rawSymbol.split(':');
         symbol = parts[0];
         exchangeParam = `&exchange=${parts[1]}`;
-    } else if (rawSymbol.endsWith('.NS') || rawSymbol.endsWith('.BO')) {
+    } else if (rawSymbol.includes('.') && !rawSymbol.endsWith('.US')) {
         preferYahoo = true;
     }
 
@@ -199,6 +317,12 @@ app.get('/api/stock/:symbol', async (req, res) => {
         }
 
         if (isValidCandleData(data)) {
+            if (data && data.meta) {
+                data.meta.symbol = rawSymbol;
+                if (!data.meta.currency) {
+                    data.meta.currency = inferCurrencyFromSymbol(rawSymbol);
+                }
+            }
             myCache.set(cacheKey, data, 300);
         }
         res.json(data);
@@ -283,7 +407,8 @@ app.get('/api/ticker-tape', async (req, res) => {
                 data = yQuotes.map(q => ({
                     symbol: q.symbol,
                     close: q.regularMarketPrice || 0,
-                    percent_change: q.regularMarketChangePercent || 0
+                    percent_change: q.regularMarketChangePercent || 0,
+                    currency: q.currency || inferCurrencyFromSymbol(q.symbol)
                 })).filter(item => item.close > 0);
             }
         } catch (yErr) {
@@ -390,7 +515,7 @@ app.get('/api/news/:symbol', async (req, res) => {
 app.get('/api/fundamentals/:symbol', async (req, res) => {
     let rawSymbol = req.params.symbol.toUpperCase();
     let cleanSymbol = rawSymbol.split(':')[0].replace('.NS', '').replace('.BO', '');
-    const isIndianStock = rawSymbol.endsWith('.NS') || rawSymbol.endsWith('.BO');
+    const isUSStock = !rawSymbol.includes('.') && !rawSymbol.includes(':');
     
     const cacheKey = `fund_${rawSymbol}`;
     const cached = myCache.get(cacheKey);
@@ -398,10 +523,33 @@ app.get('/api/fundamentals/:symbol', async (req, res) => {
 
     try {
         let data = {};
-        if (isIndianStock) {
-            const summary = await yahooFinance.quoteSummary(rawSymbol, { modules: ['summaryDetail', 'defaultKeyStatistics'] }, { validateResult: false });
+        if (isUSStock && process.env.FINNHUB_API_KEY) {
+            try {
+                const [profileRes, metricRes] = await Promise.all([
+                    axios.get(`${FINNHUB_URL}/stock/profile2?symbol=${cleanSymbol}&token=${process.env.FINNHUB_API_KEY}`),
+                    axios.get(`${FINNHUB_URL}/stock/metric?symbol=${cleanSymbol}&metric=all&token=${process.env.FINNHUB_API_KEY}`)
+                ]);
+                if (profileRes.data && (profileRes.data.ticker || profileRes.data.currency)) {
+                    data = { 
+                        profile: { ...profileRes.data, currency: profileRes.data.currency || 'USD' }, 
+                        metrics: metricRes.data?.metric || {} 
+                    };
+                }
+            } catch (fhErr) {
+                console.log(`Finnhub unavailable for ${cleanSymbol} (${fhErr.message}). Using Yahoo Finance.`);
+            }
+        }
+
+        if (!data.profile || !data.profile.currency) {
+            const summary = await yahooFinance.quoteSummary(rawSymbol, { 
+                modules: ['summaryDetail', 'defaultKeyStatistics', 'price'] 
+            }, { validateResult: false });
+            
+            const cur = summary.price?.currency || inferCurrencyFromSymbol(rawSymbol);
             data = {
                 profile: { 
+                    currency: cur,
+                    name: summary.price?.shortName || summary.price?.longName,
                     marketCapitalization: summary.summaryDetail?.marketCap ? summary.summaryDetail.marketCap / 1000000 : null 
                 },
                 metrics: { 
@@ -410,12 +558,6 @@ app.get('/api/fundamentals/:symbol', async (req, res) => {
                     '52WeekLow': summary.summaryDetail?.fiftyTwoWeekLow || null
                 }
             };
-        } else {
-            const [profileRes, metricRes] = await Promise.all([
-                axios.get(`${FINNHUB_URL}/stock/profile2?symbol=${cleanSymbol}&token=${process.env.FINNHUB_API_KEY}`),
-                axios.get(`${FINNHUB_URL}/stock/metric?symbol=${cleanSymbol}&metric=all&token=${process.env.FINNHUB_API_KEY}`)
-            ]);
-            data = { profile: profileRes.data, metrics: metricRes.data.metric };
         }
         myCache.set(cacheKey, data, 3600);
         res.json(data);
@@ -474,31 +616,50 @@ app.delete('/api/portfolio/:id', async (req, res) => {
     res.send("Deleted");
 });
 
-// --- Forex FX Rate Engine (Yahoo Finance USDINR=X with Cache & Fallback) ---
-async function getUsdInrRate() {
-    const cached = myCache.get('USD_INR_RATE');
-    if (cached && typeof cached === 'number' && cached > 0) return cached;
+// --- Forex FX Rate Engine (Multi-Currency Yahoo Finance with Cache & Fallbacks) ---
+async function getGlobalFxRates() {
+    const cached = myCache.get('GLOBAL_FX_RATES');
+    if (cached) return cached;
 
+    const rates = { ...DEFAULT_FX_RATES };
     try {
-        const quote = await yahooFinance.quote('USDINR=X');
-        const rate = quote?.regularMarketPrice;
-        if (Number.isFinite(rate) && rate > 50 && rate < 150) {
-            myCache.set('USD_INR_RATE', rate, 300); // Cache for 5 minutes
-            return rate;
+        const pairs = ['KRW=X', 'USDINR=X', 'JPY=X', 'CAD=X', 'HKD=X', 'EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'AED=X', 'SAR=X'];
+        const quotes = await yahooFinance.quote(pairs, {}, { validateResult: false });
+        if (Array.isArray(quotes)) {
+            for (const q of quotes) {
+                const val = q?.regularMarketPrice;
+                if (!Number.isFinite(val) || val <= 0) continue;
+                if (q.symbol === 'KRW=X') rates.KRW = val;
+                else if (q.symbol === 'USDINR=X') rates.INR = val;
+                else if (q.symbol === 'JPY=X') rates.JPY = val;
+                else if (q.symbol === 'CAD=X') rates.CAD = val;
+                else if (q.symbol === 'HKD=X') rates.HKD = val;
+                else if (q.symbol === 'AED=X') rates.AED = val;
+                else if (q.symbol === 'SAR=X') rates.SAR = val;
+                else if (q.symbol === 'EURUSD=X') rates.EUR = 1 / val;
+                else if (q.symbol === 'GBPUSD=X') rates.GBP = 1 / val;
+                else if (q.symbol === 'AUDUSD=X') rates.AUD = 1 / val;
+            }
         }
+        myCache.set('GLOBAL_FX_RATES', rates, 300); // Cache for 5 minutes
     } catch (e) {
-        console.warn("Could not fetch USDINR=X quote from Yahoo Finance:", e.message);
+        console.warn("FX rate refresh warning:", e.message);
     }
-    return 86.80; // High-precision current market baseline
+    return rates;
 }
 
-// Forex Rate Endpoint
+async function getUsdInrRate() {
+    const rates = await getGlobalFxRates();
+    return rates.INR || 86.80;
+}
+
+// Forex Rate Endpoint (Multi-Currency Support)
 app.get('/api/forex/rate', async (req, res) => {
     try {
-        const rate = await getUsdInrRate();
-        res.json({ base: 'USD', target: 'INR', rate, timestamp: new Date().toISOString() });
+        const rates = await getGlobalFxRates();
+        res.json({ base: 'USD', target: 'INR', rate: rates.INR || 86.80, rates, timestamp: new Date().toISOString() });
     } catch (e) {
-        res.json({ base: 'USD', target: 'INR', rate: 86.80, timestamp: new Date().toISOString() });
+        res.json({ base: 'USD', target: 'INR', rate: 86.80, rates: DEFAULT_FX_RATES, timestamp: new Date().toISOString() });
     }
 });
 
@@ -520,7 +681,7 @@ app.get('/api/virtual-account/:userId', async (req, res) => {
 
 // Paper Trading: Buy (Handles multi-currency normalized against USD balance)
 app.post('/api/paper-portfolio/buy', async (req, res) => {
-    const { userId, symbol, qty, price } = req.body;
+    const { userId, symbol, qty, price, currency } = req.body;
     const parsedQty = parseFloat(qty);
     const parsedPrice = parseFloat(price);
 
@@ -529,11 +690,13 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
     }
 
     const cleanSymbol = symbol.trim().toUpperCase();
-    const isIndian = cleanSymbol.endsWith('.NS') || cleanSymbol.endsWith('.BO');
-    const fxRate = await getUsdInrRate();
+    const stockCur = currency ? currency.toUpperCase() : inferCurrencyFromSymbol(cleanSymbol);
+    const fxRates = await getGlobalFxRates();
+    const fxToUsd = fxRates[stockCur] || 1.0;
     const totalCostNative = Number((parsedQty * parsedPrice).toFixed(2));
     // Normalize into USD virtual account balance
-    const totalCostUsd = isIndian ? Number((totalCostNative / fxRate).toFixed(2)) : totalCostNative;
+    const totalCostUsd = stockCur === 'USD' ? totalCostNative : Number((totalCostNative / fxToUsd).toFixed(2));
+    const curSymbol = getCurrencySymbol(stockCur);
 
     let account = await VirtualAccount.findOne({ userId });
     if (!account) {
@@ -543,7 +706,7 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
 
     if (account.balance < totalCostUsd) {
         return res.status(400).json({ 
-            error: `Insufficient virtual funds. Cost: $${totalCostUsd.toFixed(2)} USD${isIndian ? ` (₹${totalCostNative.toFixed(2)} at ₹${fxRate.toFixed(2)}/$)` : ''}, Available: $${account.balance.toFixed(2)}` 
+            error: `Insufficient virtual funds. Cost: $${totalCostUsd.toFixed(2)} USD (${curSymbol}${totalCostNative.toLocaleString()} ${stockCur}), Available: $${account.balance.toFixed(2)}` 
         });
     }
 
@@ -561,12 +724,12 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
         await holding.save();
     }
     
-    res.json({ holding, balance: account.balance, fxRate });
+    res.json({ holding, balance: account.balance, fxRates, rate: fxRates.INR || 86.80 });
 });
 
 // Paper Trading: Sell (Handles multi-currency normalized against USD balance)
 app.post('/api/paper-portfolio/sell', async (req, res) => {
-    const { userId, symbol, qty, price } = req.body;
+    const { userId, symbol, qty, price, currency } = req.body;
     const parsedQty = parseFloat(qty);
     const parsedPrice = parseFloat(price);
 
@@ -580,10 +743,11 @@ app.post('/api/paper-portfolio/sell', async (req, res) => {
         return res.status(400).json({ error: "Not enough shares to sell" });
     }
 
-    const isIndian = cleanSymbol.endsWith('.NS') || cleanSymbol.endsWith('.BO');
-    const fxRate = await getUsdInrRate();
+    const stockCur = currency ? currency.toUpperCase() : inferCurrencyFromSymbol(cleanSymbol);
+    const fxRates = await getGlobalFxRates();
+    const fxToUsd = fxRates[stockCur] || 1.0;
     const totalRevenueNative = Number((parsedQty * parsedPrice).toFixed(2));
-    const totalRevenueUsd = isIndian ? Number((totalRevenueNative / fxRate).toFixed(2)) : totalRevenueNative;
+    const totalRevenueUsd = stockCur === 'USD' ? totalRevenueNative : Number((totalRevenueNative / fxToUsd).toFixed(2));
 
     let account = await VirtualAccount.findOne({ userId });
     if (!account) {
@@ -600,7 +764,7 @@ app.post('/api/paper-portfolio/sell', async (req, res) => {
         await holding.save();
     }
 
-    res.json({ holding, balance: account.balance, fxRate });
+    res.json({ holding, balance: account.balance, fxRates, rate: fxRates.INR || 86.80 });
 });
 
 // Curated Multi-Market Screener Universe (US Tech, Mega-Caps, Indian NSE Bluechips)
@@ -623,7 +787,6 @@ const TECH_SYMBOLS = new Set([
 ]);
 
 function normalizeScreenerQuote(q) {
-    const isIndian = q.symbol.endsWith('.NS') || q.symbol.endsWith('.BO');
     return {
         symbol: q.symbol,
         shortName: q.shortName || q.longName || q.symbol,
@@ -635,7 +798,7 @@ function normalizeScreenerQuote(q) {
         regularMarketVolume: Number.isFinite(q.regularMarketVolume) ? q.regularMarketVolume : 0,
         marketCap: Number.isFinite(q.marketCap) ? q.marketCap : null,
         trailingPE: Number.isFinite(q.trailingPE) ? q.trailingPE : null,
-        currency: q.currency || (isIndian ? 'INR' : 'USD')
+        currency: q.currency || inferCurrencyFromSymbol(q.symbol)
     };
 }
 
@@ -752,14 +915,16 @@ app.delete('/api/alerts/:id', async (req, res) => {
 // --- 6. AI Analyst ---
 app.post('/api/ai-analysis', async (req, res) => {
     try {
-        const { symbol, price, rsi, sentiment, news } = req.body;
+        const { symbol, price, rsi, sentiment, news, currency } = req.body;
+        const curCode = currency ? currency.toUpperCase() : inferCurrencyFromSymbol(symbol);
+        const curSym = getCurrencySymbol(curCode);
         const newsItems = Array.isArray(news) ? news : [];
         const newsSummary = newsItems.slice(0, 2).map(n => n?.title || '').filter(Boolean).join(". ");
         
         let analysisText = "";
         try {
             const chatCompletion = await groq.chat.completions.create({
-                messages: [{ role: "user", content: `Analyze ${symbol}. Price: $${price}, RSI: ${rsi}, Sentiment: ${sentiment}. News: ${newsSummary}. 3 sentences technical and market verdict.` }],
+                messages: [{ role: "user", content: `Analyze ${symbol}. Price: ${curSym}${price} (${curCode}), RSI: ${rsi}, Sentiment: ${sentiment}. News: ${newsSummary}. 3 sentences technical and market verdict.` }],
                 model: "llama-3.1-8b-instant",
             });
             analysisText = chatCompletion.choices[0].message.content;
@@ -767,7 +932,7 @@ app.post('/api/ai-analysis', async (req, res) => {
             console.error("Groq API error:", groqErr.message);
             const rsiNum = parseFloat(rsi) || 50;
             const rsiVerdict = rsiNum > 65 ? "overbought momentum, signaling potential consolidation" : rsiNum < 35 ? "oversold conditions, indicating potential mean-reversion buying interest" : "balanced neutral momentum";
-            analysisText = `${symbol} is trading at $${price} within ${rsiVerdict} (RSI: ${rsi || '50.0'}). Current market sentiment stands at ${sentiment || 'Neutral'}. Quantitative risk models recommend confirming directional breakout with volume before placing order execution.`;
+            analysisText = `${symbol} is trading at ${curSym}${price} (${curCode}) within ${rsiVerdict} (RSI: ${rsi || '50.0'}). Current market sentiment stands at ${sentiment || 'Neutral'}. Quantitative risk models recommend confirming directional breakout with volume before placing order execution.`;
         }
         res.json({ analysis: analysisText });
     } catch (error) { 
