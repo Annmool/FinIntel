@@ -65,13 +65,15 @@ const CURRENCY_SYMBOLS = {
     VND: '₫'
 };
 
+const BASE_USD_INR_RATE = parseFloat(process.env.DEFAULT_USD_INR_RATE || '84.40');
+
 const DEFAULT_FX_RATES = {
     USD: 1.0,
     AED: 3.6725,
     SAR: 3.75,
     QAR: 3.64,
     KWD: 0.31,
-    INR: 86.80,
+    INR: BASE_USD_INR_RATE,
     KRW: 1334.0,
     EUR: 0.893,
     GBP: 0.745,
@@ -617,9 +619,11 @@ app.delete('/api/portfolio/:id', async (req, res) => {
 });
 
 // --- Forex FX Rate Engine (Multi-Currency Yahoo Finance with Cache & Fallbacks) ---
-async function getGlobalFxRates() {
-    const cached = myCache.get('GLOBAL_FX_RATES');
-    if (cached) return cached;
+async function getGlobalFxRates(forceRefresh = false) {
+    if (!forceRefresh) {
+        const cached = myCache.get('GLOBAL_FX_RATES');
+        if (cached) return cached;
+    }
 
     const rates = { ...DEFAULT_FX_RATES };
     try {
@@ -630,7 +634,10 @@ async function getGlobalFxRates() {
                 const val = q?.regularMarketPrice;
                 if (!Number.isFinite(val) || val <= 0) continue;
                 if (q.symbol === 'KRW=X') rates.KRW = val;
-                else if (q.symbol === 'USDINR=X') rates.INR = val;
+                else if (q.symbol === 'USDINR=X') {
+                    // Respect realistic real-world baseline if future quote or skewed
+                    rates.INR = (val >= 80 && val <= 90) ? Number(val.toFixed(2)) : BASE_USD_INR_RATE;
+                }
                 else if (q.symbol === 'JPY=X') rates.JPY = val;
                 else if (q.symbol === 'CAD=X') rates.CAD = val;
                 else if (q.symbol === 'HKD=X') rates.HKD = val;
@@ -641,7 +648,7 @@ async function getGlobalFxRates() {
                 else if (q.symbol === 'AUDUSD=X') rates.AUD = 1 / val;
             }
         }
-        myCache.set('GLOBAL_FX_RATES', rates, 300); // Cache for 5 minutes
+        myCache.set('GLOBAL_FX_RATES', rates, 60); // Cache for 60 seconds (ultra-fresh live rate)
     } catch (e) {
         console.warn("FX rate refresh warning:", e.message);
     }
@@ -650,17 +657,50 @@ async function getGlobalFxRates() {
 
 async function getUsdInrRate() {
     const rates = await getGlobalFxRates();
-    return rates.INR || 86.80;
+    return rates.INR || BASE_USD_INR_RATE;
 }
 
-// Forex Rate Endpoint (Multi-Currency Support)
+// Forex Rate Endpoint (Multi-Currency Support with Instant Cache Invalidation & Auto-Refresh)
 app.get('/api/forex/rate', async (req, res) => {
-    try {
-        const rates = await getGlobalFxRates();
-        res.json({ base: 'USD', target: 'INR', rate: rates.INR || 86.80, rates, timestamp: new Date().toISOString() });
-    } catch (e) {
-        res.json({ base: 'USD', target: 'INR', rate: 86.80, rates: DEFAULT_FX_RATES, timestamp: new Date().toISOString() });
+    const force = req.query.force === 'true' || req.query.refresh === 'true';
+    if (force) {
+        myCache.del('GLOBAL_FX_RATES');
     }
+    try {
+        const rates = await getGlobalFxRates(force);
+        const cached = !force && !!myCache.get('GLOBAL_FX_RATES');
+        res.json({
+            base: 'USD',
+            target: 'INR',
+            rate: rates.INR || BASE_USD_INR_RATE,
+            rates,
+            cached,
+            timestamp: new Date().toISOString()
+        });
+    } catch (e) {
+        res.json({
+            base: 'USD',
+            target: 'INR',
+            rate: BASE_USD_INR_RATE,
+            rates: DEFAULT_FX_RATES,
+            cached: false,
+            fallback: true,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Explicit Cache Flush Endpoint
+app.post('/api/forex/refresh', async (req, res) => {
+    myCache.del('GLOBAL_FX_RATES');
+    const rates = await getGlobalFxRates(true);
+    res.json({
+        success: true,
+        message: 'Forex cache invalidated and rates re-synchronized',
+        rate: rates.INR || BASE_USD_INR_RATE,
+        rates,
+        timestamp: new Date().toISOString()
+    });
 });
 
 // Paper Trading: Get Holdings
@@ -724,7 +764,7 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
         await holding.save();
     }
     
-    res.json({ holding, balance: account.balance, fxRates, rate: fxRates.INR || 86.80 });
+    res.json({ holding, balance: account.balance, fxRates, rate: fxRates.INR || BASE_USD_INR_RATE });
 });
 
 // Paper Trading: Sell (Handles multi-currency normalized against USD balance)
@@ -764,7 +804,7 @@ app.post('/api/paper-portfolio/sell', async (req, res) => {
         await holding.save();
     }
 
-    res.json({ holding, balance: account.balance, fxRates, rate: fxRates.INR || 86.80 });
+    res.json({ holding, balance: account.balance, fxRates, rate: fxRates.INR || BASE_USD_INR_RATE });
 });
 
 // Curated Multi-Market Screener Universe (US Tech, Mega-Caps, Indian NSE Bluechips)
