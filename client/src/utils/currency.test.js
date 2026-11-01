@@ -53,11 +53,15 @@ describe('Currency Utilities', () => {
     expect(formatPrice(17.25, 'AED', { maxDecimals: 1 })).toBe('17.3');
   });
 
-  test('converts prices between currencies via FX engine including AED', () => {
-    const fxRates = { USD: 1.0, AED: 3.6725, KRW: 1334.0, INR: 86.80 };
+  test('converts prices between currencies via FX engine including AED and INR', () => {
+    const fxRates = { USD: 1.0, AED: 3.6725, KRW: 1334.0, INR: 84.40 };
     // 11.38 AED in USD -> 11.38 / 3.6725 = 3.0987...
     const aedInUsd = convertPrice(11.38, 'AED', 'USD', fxRates);
     expect(Number(aedInUsd.toFixed(2))).toBe(3.10);
+
+    // 844 INR in USD -> 844 / 84.40 = 10 USD
+    const inrInUsd = convertPrice(844, 'INR', 'USD', fxRates);
+    expect(Number(inrInUsd.toFixed(2))).toBe(10.00);
 
     // 242,000 KRW in USD -> 242,000 / 1334 = 181.409...
     const inUsd = convertPrice(242000, 'KRW', 'USD', fxRates);

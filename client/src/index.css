@@ -703,11 +703,43 @@ button {
 .fx-rate-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   padding: 3px 8px;
   background: var(--bg-surface-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
+}
+
+.fx-refresh-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  padding: 2px;
+  margin-left: 2px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, transform 0.15s;
+}
+
+.fx-refresh-btn:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.fx-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.spin {
+  animation: fxSpin 0.8s linear infinite;
+}
+
+@keyframes fxSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 /* Financial Tables */

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import {
   Search,
@@ -26,7 +26,8 @@ import {
   ShieldCheck,
   PieChart,
   Newspaper,
-  Globe
+  Globe,
+  RefreshCw
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -75,8 +76,32 @@ function App() {
   const [isQuantLabOpen, setIsQuantLabOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'markets' | 'portfolio' | 'screener' | 'academy'
   const [portfolioPrices, setPortfolioPrices] = useState({});
-  const [fxRates, setFxRates] = useState(DEFAULT_FX_RATES);
-  const [fxRate, setFxRate] = useState(86.80);
+  const [fxRate, setFxRate] = useState(() => {
+    try {
+      const cached = localStorage.getItem('finintel_fx_rate');
+      const val = parseFloat(cached);
+      if (Number.isFinite(val) && val > 0) return val;
+    } catch (e) {}
+    return DEFAULT_FX_RATES.INR || 84.40;
+  });
+  const [fxRates, setFxRates] = useState(() => {
+    try {
+      const cached = localStorage.getItem('finintel_fx_rates');
+      if (cached) {
+        return { ...DEFAULT_FX_RATES, ...JSON.parse(cached) };
+      }
+    } catch (e) {}
+    return DEFAULT_FX_RATES;
+  });
+  const [isFxLoading, setIsFxLoading] = useState(false);
+  const [fxLastUpdated, setFxLastUpdated] = useState(() => {
+    try {
+      const cached = localStorage.getItem('finintel_fx_time');
+      return cached ? new Date(cached) : null;
+    } catch (e) {
+      return null;
+    }
+  });
   const [baseCurrency, setBaseCurrency] = useState(() => {
     try {
       return localStorage.getItem('finintel_base_currency') || 'USD';
@@ -129,6 +154,40 @@ function App() {
     setToast({ show: true, message, type });
     setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3500);
   };
+
+  const fetchFxRate = useCallback((force = false) => {
+    setIsFxLoading(true);
+    const url = `${API_URL}/api/forex/rate?force=${force ? 'true' : 'false'}&_t=${Date.now()}`;
+    axios.get(url)
+      .then(res => {
+        const rateVal = parseFloat(res.data?.rate);
+        if (Number.isFinite(rateVal) && rateVal > 0) {
+          setFxRate(rateVal);
+          try { localStorage.setItem('finintel_fx_rate', String(rateVal)); } catch (e) {}
+        }
+        if (res.data?.rates) {
+          setFxRates(prev => {
+            const merged = { ...prev, ...res.data.rates };
+            try { localStorage.setItem('finintel_fx_rates', JSON.stringify(merged)); } catch (e) {}
+            return merged;
+          });
+        }
+        const now = new Date();
+        setFxLastUpdated(now);
+        try { localStorage.setItem('finintel_fx_time', now.toISOString()); } catch (e) {}
+        if (force) {
+          showToast(`Forex synchronized: 1 USD = ₹${(rateVal || fxRate).toFixed(2)}`);
+        }
+      })
+      .catch(() => {
+        if (force) {
+          showToast('Using local exchange rates (backend connecting...)', 'error');
+        }
+      })
+      .finally(() => {
+        setIsFxLoading(false);
+      });
+  }, [fxRate]);
 
   const fetchVirtualBalance = async (uid) => {
     try {
@@ -221,21 +280,8 @@ function App() {
         .catch(() => {});
     };
 
-    const fetchFxRate = () => {
-      axios.get(`${API_URL}/api/forex/rate`)
-        .then(res => {
-          if (res.data?.rate && Number.isFinite(parseFloat(res.data.rate))) {
-            setFxRate(parseFloat(res.data.rate));
-          }
-          if (res.data?.rates) {
-            setFxRates(prev => ({ ...prev, ...res.data.rates }));
-          }
-        })
-        .catch(() => {});
-    };
-
-    fetchFxRate();
-    const fxInterval = setInterval(fetchFxRate, 10 * 60 * 1000);
+    fetchFxRate(false);
+    const fxInterval = setInterval(() => fetchFxRate(false), 60 * 1000); // Live FX auto-refresh every 60s
 
     fetchBriefing();
     const briefingInterval = setInterval(fetchBriefing, 5 * 60 * 1000);
@@ -245,7 +291,7 @@ function App() {
       clearInterval(briefingInterval);
       clearInterval(fxInterval);
     };
-  }, [theme]);
+  }, [theme, fetchFxRate]);
 
   // Autocomplete Logic
   useEffect(() => {
@@ -1335,12 +1381,28 @@ function App() {
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                    {/* Live FX Rate Pill */}
-                    <div className="fx-rate-pill" title="Live USD/INR Exchange Rate">
+                    {/* Live FX Rate Pill with Auto-Refresh & Cache Invalidation */}
+                    <div 
+                      className="fx-rate-pill" 
+                      title={`Live USD/INR Exchange Rate · Auto-refreshes every 60s · Last updated: ${fxLastUpdated ? fxLastUpdated.toLocaleTimeString() : 'Live'}`}
+                    >
                       <Globe size={12} color="var(--accent)" />
                       <span className="font-mono" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
                         1 USD = ₹{fxRate.toFixed(2)}
                       </span>
+                      <button
+                        type="button"
+                        className="fx-refresh-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          fetchFxRate(true);
+                        }}
+                        disabled={isFxLoading}
+                        title="Invalidate cache & force refresh exchange rates"
+                        aria-label="Refresh exchange rates"
+                      >
+                        <RefreshCw size={11} className={isFxLoading ? 'spin' : ''} />
+                      </button>
                     </div>
 
                     {/* Currency Toggle */}
