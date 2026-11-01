@@ -82,7 +82,7 @@ function App() {
       const val = parseFloat(cached);
       if (Number.isFinite(val) && val > 0) return val;
     } catch (e) {}
-    return DEFAULT_FX_RATES.INR || 84.40;
+    return DEFAULT_FX_RATES.INR || 94.94;
   });
   const [fxRates, setFxRates] = useState(() => {
     try {

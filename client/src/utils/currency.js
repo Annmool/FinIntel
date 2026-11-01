@@ -41,7 +41,7 @@ export const DEFAULT_FX_RATES = {
   SAR: 3.75,
   QAR: 3.64,
   KWD: 0.31,
-  INR: 84.40,
+  INR: 94.94,
   KRW: 1334.0,
   EUR: 0.893,
   GBP: 0.745,
