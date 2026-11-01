@@ -1647,10 +1647,13 @@ function App() {
                           flexDirection: 'column',
                           gap: '4px',
                           border: '1px solid var(--border-subtle)',
-                          transition: 'border-color 0.15s'
+                          transition: 'border-color 0.15s',
+                          minWidth: 0,
+                          maxWidth: '100%',
+                          boxSizing: 'border-box'
                         }}
                       >
-                        <span style={{ fontSize: '0.82rem', fontWeight: '500', color: 'var(--text-primary)', lineHeight: '1.4' }}>
+                        <span style={{ fontSize: '0.82rem', fontWeight: '500', color: 'var(--text-primary)', lineHeight: '1.4', overflowWrap: 'break-word', wordBreak: 'break-word' }}>
                           {n.title}
                         </span>
                         <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
