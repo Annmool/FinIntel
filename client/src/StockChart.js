@@ -7,6 +7,17 @@ const StockChart = ({ data, theme }) => {
     useLayoutEffect(() => {
         if (!data || data.length === 0 || !chartContainerRef.current) return;
 
+        // Helper to determine responsive chart height based on viewport width
+        const getChartHeight = () => {
+            if (window.innerWidth <= 480) return 260;
+            if (window.innerWidth <= 768) return 300;
+            if (window.innerWidth <= 1024) return 360;
+            return 420;
+        };
+
+        const currentHeight = getChartHeight();
+        chartContainerRef.current.style.height = `${currentHeight}px`;
+
         // 1. Define colors based on the current theme (matching our terminal design system)
         const isDark = theme === 'dark';
         const colors = {
@@ -21,19 +32,20 @@ const StockChart = ({ data, theme }) => {
         // 2. Clear container
         chartContainerRef.current.innerHTML = '';
 
-        // 3. Create Chart with Dynamic Theme colors
+        // 3. Create Chart with Dynamic Theme colors and responsive dimensions
         const chart = createChart(chartContainerRef.current, {
             layout: {
                 background: { type: ColorType.Solid, color: colors.backgroundColor },
                 textColor: colors.textColor,
                 fontFamily: 'Inter, sans-serif',
+                fontSize: window.innerWidth <= 640 ? 10 : 12,
             },
             grid: {
                 vertLines: { color: colors.gridColor },
                 horzLines: { color: colors.gridColor },
             },
             width: chartContainerRef.current.clientWidth,
-            height: 450, // Increased height for premium feel
+            height: currentHeight,
             timeScale: {
                 borderColor: colors.gridColor,
                 timeVisible: true,
@@ -97,7 +109,14 @@ const StockChart = ({ data, theme }) => {
 
         // Handle window resizing automatically
         const handleResize = () => {
-            chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+            if (chartContainerRef.current) {
+                const newHeight = getChartHeight();
+                chartContainerRef.current.style.height = `${newHeight}px`;
+                chart.applyOptions({ 
+                    width: chartContainerRef.current.clientWidth,
+                    height: newHeight
+                });
+            }
         };
         window.addEventListener('resize', handleResize);
 
@@ -110,9 +129,9 @@ const StockChart = ({ data, theme }) => {
     return (
         <div 
             ref={chartContainerRef} 
+            className="terminal-stock-chart"
             style={{ 
                 width: '100%', 
-                height: '420px', 
                 marginTop: '16px',
                 borderRadius: 'var(--radius-sm)',
                 overflow: 'hidden',
