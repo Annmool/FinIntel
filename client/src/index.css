@@ -110,6 +110,8 @@
 html, body {
   margin: 0;
   padding: 0;
+  width: 100%;
+  overflow-x: hidden;
   background-color: var(--bg-primary);
   color: var(--text-primary);
   font-family: var(--font-sans);
@@ -173,6 +175,7 @@ button {
   min-width: 0;
   background: var(--bg-primary);
   box-sizing: border-box;
+  overflow-x: hidden;
 }
 
 /* Mobile Header - Strictly Hidden on Desktop Viewports */
@@ -2127,29 +2130,6 @@ button {
   color: #FBBF24;
 }
 
-/* Responsive Overrides */
-@media (max-width: 1024px) {
-  .benchmark-metrics-grid-modern,
-  .risk-metrics-grid-modern {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 768px) {
-  .quant-body-grid {
-    grid-template-columns: 1fr;
-  }
-  .quant-sidebar-panel {
-    border-right: none;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    max-height: 380px;
-  }
-  .benchmark-metrics-grid-modern,
-  .risk-metrics-grid-modern {
-    grid-template-columns: 1fr;
-  }
-}
-
 /* Risk Metrics Vertical Stack */
 .risk-metrics-stack {
   display: flex;
@@ -2309,6 +2289,129 @@ button {
   color: #0b140e;
 }
 
+/* Stock Action Buttons Group */
+.stock-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Screener Search Bar Container */
+.screener-search-wrap {
+  position: relative;
+  width: 240px;
+}
+
+/* Academy Grid */
+.academy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+/* Sidebar Desktop Tag */
+.desktop-tag {
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+/* Quant Lab Desktop Notice Modal (Mobile & Small Screen Protection) */
+.quant-desktop-notice-modal {
+  background: #0E1612;
+  border: 1px solid rgba(105, 211, 154, 0.35);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(105, 211, 154, 0.2);
+  width: 92vw;
+  max-width: 520px;
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: quantFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.quant-desktop-notice-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.quant-notice-badge {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.quant-desktop-notice-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #F3F4F6;
+  letter-spacing: -0.02em;
+}
+
+.quant-desktop-notice-content {
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.quant-desktop-notice-content p {
+  margin: 0;
+}
+
+.quant-desktop-spec-box {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.quant-desktop-spec-box .spec-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.76rem;
+}
+
+.quant-desktop-spec-box .spec-label {
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+}
+
+.quant-desktop-spec-box .spec-val {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.quant-desktop-subtext {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.quant-desktop-notice-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 /* ==========================================================================
    Responsive Breakpoints & Reflow Behavior
    ========================================================================== */
@@ -2321,7 +2424,7 @@ button {
   .dashboard-span-5 { grid-column: span 12; }
 }
 
-/* Mobile & Touch Devices (<= 1024px) */
+/* Tablet & Small Workstations (<= 1024px) */
 @media (max-width: 1024px) {
   .mobile-header {
     display: flex;
@@ -2354,6 +2457,8 @@ button {
     transform: translateX(-100%);
     transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
     box-shadow: none;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .sidebar.open {
@@ -2377,6 +2482,35 @@ button {
     padding: 16px;
   }
 
+  /* Topbar Reflow */
+  .terminal-topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding-bottom: 14px;
+  }
+
+  .global-search-container {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .search-kbd-hint {
+    display: none;
+  }
+
+  .topbar-status-group {
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  /* Hide Quant Lab launcher from topbar on mobile/tablets to avoid clutter */
+  .topbar-quant-btn {
+    display: none !important;
+  }
+
+  /* Grid Layouts */
   .dashboard-grid {
     grid-template-columns: 1fr;
     gap: 16px;
@@ -2395,21 +2529,238 @@ button {
     grid-template-columns: 1fr;
   }
 
+  /* Quant Lab Modal Fallback Reflow if bypassed */
+  .quant-lab-modal {
+    width: 95vw;
+    height: 92vh;
+    max-height: none;
+    overflow-y: auto;
+  }
+
+  .quant-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .quant-header-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
   .quant-body-grid {
+    grid-template-columns: 1fr;
+    height: auto;
+    overflow: visible;
+  }
+
+  .quant-sidebar-panel {
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    max-height: none;
+  }
+
+  .benchmark-metrics-grid-modern,
+  .risk-metrics-grid-modern {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Tablets & Mobile Devices (<= 768px) */
+@media (max-width: 768px) {
+  .main-content {
+    padding: 14px 12px;
+  }
+
+  .terminal-panel {
+    padding: 14px;
+  }
+
+  /* 2x2 Overview Summary Grid */
+  .portfolio-summary-bar {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+
+  .summary-metric-card {
+    padding: 12px;
+  }
+
+  .summary-metric-value {
+    font-size: 1.25rem;
+  }
+
+  /* Responsive Horizontal Tables */
+  .terminal-table-container {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .terminal-table {
+    min-width: 580px;
+  }
+
+  /* News & Catalysts */
+  .news-feed-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .screener-search-wrap {
+    width: 100%;
+  }
+
+  .screener-tabs-wrap {
+    width: 100%;
+  }
+
+  .academy-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .benchmark-metrics-grid-modern,
+  .risk-metrics-grid-modern {
     grid-template-columns: 1fr;
   }
 }
 
-/* Small Handhelds (<= 640px) */
+/* Handheld Smartphones (<= 640px) */
 @media (max-width: 640px) {
-  .terminal-topbar {
+  .main-content {
+    padding: 10px 8px;
+  }
+
+  .terminal-panel {
+    padding: 12px 10px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* Stock Detail View Header */
+  .stock-view-header {
     flex-direction: column;
     align-items: stretch;
+    gap: 12px;
   }
-  .topbar-status-group {
-    justify-content: space-between;
+
+  .stock-symbol-large {
+    font-size: 1.35rem;
   }
+
+  .stock-price-large {
+    font-size: 1.22rem;
+  }
+
+  /* Action Buttons Grid on Mobile */
+  .stock-header-actions {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+    width: 100%;
+  }
+
+  .stock-header-actions .btn {
+    justify-content: center;
+    padding: 7px 8px;
+    font-size: 0.78rem;
+  }
+
+  /* Key Stats Grid: Clean 2 columns */
+  .stock-stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin: 12px 0;
+  }
+
+  .stock-stat-box {
+    padding: 8px 10px;
+  }
+
+  .stock-stat-val {
+    font-size: 0.95rem;
+  }
+
+  /* Overview Cards 2x2 */
   .portfolio-summary-bar {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .summary-metric-card {
+    padding: 10px;
+  }
+
+  .summary-metric-label {
+    font-size: 0.68rem;
+  }
+
+  .summary-metric-value {
+    font-size: 1.15rem;
+  }
+
+  .summary-metric-sub {
+    font-size: 0.7rem;
+  }
+
+  /* Centered Alert Toast on Mobile */
+  .toast {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    max-width: calc(100vw - 24px);
+    justify-content: center;
+  }
+
+  /* Mobile Search Autocomplete */
+  .suggestions-popover {
+    width: 100%;
+    left: 0;
+    right: 0;
+    max-height: 240px;
+  }
+
+  /* Mobile App Header */
+  .mobile-header {
+    padding: 8px 12px;
+  }
+
+  .currency-toggle-group {
+    flex-wrap: wrap;
+  }
+}
+
+/* Compact Smartphones (<= 380px, e.g. iPhone SE / Galaxy Mini) */
+@media (max-width: 380px) {
+  .topbar-status-group {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .market-live-badge,
+  .paper-capital-badge {
+    justify-content: center;
+    font-size: 0.68rem;
+    padding: 4px 6px;
+  }
+
+  .portfolio-summary-bar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .stock-stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stock-header-actions {
     grid-template-columns: 1fr;
   }
 }
+

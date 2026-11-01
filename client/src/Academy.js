@@ -30,7 +30,7 @@ const Academy = ({ onClose }) => {
         </p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+      <div className="academy-grid">
         {/* Module 1 */}
         <div className="terminal-panel">
           <div className="panel-header">
