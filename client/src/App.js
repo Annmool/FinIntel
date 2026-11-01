@@ -742,6 +742,7 @@ function App() {
             >
               <Cpu size={16} className="nav-icon" />
               <span>Quant Lab (C++ Engine)</span>
+              <span className="term-badge neutral font-mono desktop-tag" style={{ fontSize: '0.65rem', marginLeft: 'auto' }}>Desktop</span>
             </button>
 
             <button
@@ -966,7 +967,7 @@ function App() {
                 ${virtualBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Sim Cash
               </div>
               <button
-                className="btn btn-secondary btn-sm"
+                className="btn btn-secondary btn-sm topbar-quant-btn"
                 onClick={() => setIsQuantLabOpen(true)}
                 title="Launch C++ Quant Lab"
               >
@@ -1127,7 +1128,7 @@ function App() {
                     </span>
                   </div>
 
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <div className="stock-header-actions">
                     {(() => {
                       const curSym = data?.meta?.symbol || symbol;
                       const isWatching = watchlist.some(item => item.symbol === curSym);

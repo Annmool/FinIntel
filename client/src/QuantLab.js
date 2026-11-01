@@ -10,6 +10,7 @@ import {
   Sliders,
   Layers,
   ArrowRight,
+  ArrowLeft,
   X,
   Target,
   Cloud,
@@ -421,6 +422,20 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
   const [riskFreeRate, setRiskFreeRate] = useState(0.045);
   const [engineMode, setEngineMode] = useState('cloud'); // 'cloud' | 'local'
   const [fallbackNote, setFallbackNote] = useState('');
+
+  // Responsive Desktop detection for institutional C++ computing
+  const [isMobileScreen, setIsMobileScreen] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < 1024 : false
+  );
+  const [bypassedMobileNotice, setBypassedMobileNotice] = useState(false);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileScreen(window.innerWidth < 1024);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -1047,6 +1062,63 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
   const handleCanvasMouseLeave = () => {
     setHoverData(null);
   };
+
+  if (isMobileScreen && !bypassedMobileNotice) {
+    return (
+      <div className="quant-lab-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className="quant-desktop-notice-modal">
+          <div className="quant-desktop-notice-header">
+            <div className="quant-notice-badge">
+              <Laptop size={26} color="var(--accent)" />
+            </div>
+            <div>
+              <span className="quant-badge-cpp" style={{ marginBottom: '6px', display: 'inline-block' }}>
+                Desktop Experience Recommended
+              </span>
+              <h2 className="quant-desktop-notice-title">FinIntel Quant Lab</h2>
+            </div>
+          </div>
+
+          <div className="quant-desktop-notice-content">
+            <p>
+              Quant Lab features an institutional multi-threaded <strong>C++20 OpenMP</strong> simulation engine running up to <strong>50,000 Monte Carlo paths</strong>, dual real-time HTML5 canvas charts, and multi-asset Markowitz frontier matrices.
+            </p>
+            <div className="quant-desktop-spec-box">
+              <div className="spec-row">
+                <span className="spec-label">Compute Core</span>
+                <span className="spec-val font-mono">C++20 · OpenMP SIMD</span>
+              </div>
+              <div className="spec-row">
+                <span className="spec-label">Simulation Scale</span>
+                <span className="spec-val font-mono">50,000 Portfolio Paths</span>
+              </div>
+              <div className="spec-row">
+                <span className="spec-label">Optimal Resolution</span>
+                <span className="spec-val font-mono">&ge; 1024px Workstation Display</span>
+              </div>
+            </div>
+            <p className="quant-desktop-subtext">
+              For full mathematical fidelity and interactive slider controls, access Quant Lab from a laptop or desktop monitor.
+            </p>
+          </div>
+
+          <div className="quant-desktop-notice-actions">
+            <button className="btn btn-primary" onClick={onClose} style={{ flex: 1, padding: '10px 16px' }}>
+              <ArrowLeft size={16} />
+              <span>Return to Dashboard</span>
+            </button>
+            <button 
+              className="btn btn-secondary" 
+              onClick={() => setBypassedMobileNotice(true)}
+              style={{ fontSize: '0.78rem' }}
+            >
+              Open on Mobile Anyway
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="quant-lab-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
