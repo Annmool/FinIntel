@@ -616,7 +616,7 @@ app.delete('/api/portfolio/:id', async (req, res) => {
     res.send("Deleted");
 });
 
-// --- Forex FX Rate Engine (Multi-Currency Live Provider with Dual-Source Failover) ---
+// --- Forex FX Rate Engine (ExchangeRate-API Primary with Yahoo & OpenER Fallbacks) ---
 async function getGlobalFxRates(forceRefresh = false) {
     if (!forceRefresh) {
         const cached = myCache.get('GLOBAL_FX_RATES');
@@ -626,32 +626,52 @@ async function getGlobalFxRates(forceRefresh = false) {
     const rates = { ...DEFAULT_FX_RATES };
     let fetched = false;
 
-    // Primary: Yahoo Finance Live Real-Time Quotes
-    try {
-        const pairs = ['KRW=X', 'USDINR=X', 'JPY=X', 'CAD=X', 'HKD=X', 'EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'AED=X', 'SAR=X'];
-        const quotes = await yahooFinance.quote(pairs, {}, { validateResult: false });
-        if (Array.isArray(quotes)) {
-            for (const q of quotes) {
-                const val = q?.regularMarketPrice;
-                if (!Number.isFinite(val) || val <= 0) continue;
-                if (q.symbol === 'KRW=X') rates.KRW = val;
-                else if (q.symbol === 'USDINR=X') rates.INR = val;
-                else if (q.symbol === 'JPY=X') rates.JPY = val;
-                else if (q.symbol === 'CAD=X') rates.CAD = val;
-                else if (q.symbol === 'HKD=X') rates.HKD = val;
-                else if (q.symbol === 'AED=X') rates.AED = val;
-                else if (q.symbol === 'SAR=X') rates.SAR = val;
-                else if (q.symbol === 'EURUSD=X') rates.EUR = 1 / val;
-                else if (q.symbol === 'GBPUSD=X') rates.GBP = 1 / val;
-                else if (q.symbol === 'AUDUSD=X') rates.AUD = 1 / val;
+    // 1. Primary: Dedicated ExchangeRate-API v6 Live Feed (using user API Key)
+    const apiKey = process.env.EXCHANGERATE_API_KEY || 'a0cec5db56066dffe94f9134';
+    if (apiKey) {
+        try {
+            const fxRes = await axios.get(`https://v6.exchangerate-api.com/v6/${apiKey}/latest/USD`, { timeout: 4000 });
+            if (fxRes.data?.result === 'success' && fxRes.data?.conversion_rates) {
+                for (const [code, rateVal] of Object.entries(fxRes.data.conversion_rates)) {
+                    if (Number.isFinite(rateVal) && rateVal > 0) {
+                        rates[code] = Number(rateVal.toFixed(4));
+                    }
+                }
+                fetched = true;
             }
-            fetched = true;
+        } catch (e) {
+            console.warn("ExchangeRate-API provider notice:", e.message);
         }
-    } catch (e) {
-        console.warn("Primary FX engine notice:", e.message);
     }
 
-    // Secondary: Open Exchange Rates Live API Failover if primary was unreachable
+    // 2. Secondary Failover: Yahoo Finance Live Real-Time Quotes
+    if (!fetched) {
+        try {
+            const pairs = ['KRW=X', 'USDINR=X', 'JPY=X', 'CAD=X', 'HKD=X', 'EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'AED=X', 'SAR=X'];
+            const quotes = await yahooFinance.quote(pairs, {}, { validateResult: false });
+            if (Array.isArray(quotes)) {
+                for (const q of quotes) {
+                    const val = q?.regularMarketPrice;
+                    if (!Number.isFinite(val) || val <= 0) continue;
+                    if (q.symbol === 'KRW=X') rates.KRW = val;
+                    else if (q.symbol === 'USDINR=X') rates.INR = val;
+                    else if (q.symbol === 'JPY=X') rates.JPY = val;
+                    else if (q.symbol === 'CAD=X') rates.CAD = val;
+                    else if (q.symbol === 'HKD=X') rates.HKD = val;
+                    else if (q.symbol === 'AED=X') rates.AED = val;
+                    else if (q.symbol === 'SAR=X') rates.SAR = val;
+                    else if (q.symbol === 'EURUSD=X') rates.EUR = 1 / val;
+                    else if (q.symbol === 'GBPUSD=X') rates.GBP = 1 / val;
+                    else if (q.symbol === 'AUDUSD=X') rates.AUD = 1 / val;
+                }
+                fetched = true;
+            }
+        } catch (e) {
+            console.warn("Yahoo FX failover notice:", e.message);
+        }
+    }
+
+    // 3. Tertiary Failover: Open Exchange Rates Live API
     if (!fetched || !rates.INR) {
         try {
             const fallbackRes = await axios.get('https://open.er-api.com/v6/latest/USD', { timeout: 3500 });
@@ -661,9 +681,10 @@ async function getGlobalFxRates(forceRefresh = false) {
                         rates[code] = rateVal;
                     }
                 }
+                fetched = true;
             }
         } catch (e) {
-            console.warn("Secondary FX failover notice:", e.message);
+            console.warn("Tertiary OpenER failover notice:", e.message);
         }
     }
 
