@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import React, { useState, useEffect, useRef } from 'react';
+import axios from './apiClient';
 import { ArrowLeft, Activity, ArrowUpRight, ArrowDownRight, Search, RefreshCw } from 'lucide-react';
 
 import { API_URL } from './apiConfig';
@@ -11,24 +11,29 @@ function Screener({ onClose, onSelectSymbol }) {
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [error, setError] = useState('');
+    const requestSequence = useRef(0);
 
     useEffect(() => {
         fetchScreener(filterType);
+        return () => { requestSequence.current += 1; };
     }, [filterType]);
 
     const fetchScreener = async (type) => {
+        const requestId = ++requestSequence.current;
         setLoading(true);
         setError('');
         try {
             const res = await axios.get(`${API_URL}/api/screener/${type}`);
             if (!Array.isArray(res.data)) throw new Error('The market data service returned an unexpected response.');
+            if (requestId !== requestSequence.current) return;
             setStocks(res.data);
         } catch (e) {
+            if (requestId !== requestSequence.current) return;
             console.error("Screener Error", e);
             setStocks([]);
             setError(e.response?.data?.error || e.message || 'Unable to load market data. Please try again.');
         } finally {
-            setLoading(false);
+            if (requestId === requestSequence.current) setLoading(false);
         }
     };
 

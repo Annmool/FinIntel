@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import axios from 'axios';
+import axios from './apiClient';
 import {
   Cpu,
   Zap,

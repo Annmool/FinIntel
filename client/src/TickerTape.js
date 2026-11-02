@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import axios from './apiClient';
 
 import { API_URL } from './apiConfig';
 import { getCurrencySymbol, formatPrice } from './utils/currency';
