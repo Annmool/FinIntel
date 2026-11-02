@@ -860,29 +860,100 @@ app.get('/api/virtual-account/:userId', async (req, res) => {
     res.json(account);
 });
 
-async function getPaperMarketQuote(symbol) {
-    return getOrLoad(`paper_quote_${symbol}`, 10, async () => {
-        const result = await yahooFinance.quote(symbol, {}, { validateResult: false });
-        const quote = Array.isArray(result) ? result[0] : result;
-        const price = Number(quote?.regularMarketPrice);
-        if (!Number.isFinite(price) || price <= 0) {
-            const error = new Error(`Could not get a valid market quote for ${symbol}. Try again later.`);
-            error.status = 503;
-            throw error;
+async function getPaperMarketQuote(symbol, fallbackPrice, fallbackCurrency) {
+    const cleanSym = String(symbol || '').trim().toUpperCase();
+    const inferredCur = inferCurrencyFromSymbol(cleanSym);
+
+    return getOrLoad(`paper_quote_${cleanSym}`, 10, async () => {
+        // 1. Try Yahoo Finance
+        try {
+            const result = await yahooFinance.quote(cleanSym, {}, { validateResult: false });
+            const quote = Array.isArray(result) ? result[0] : result;
+            const price = Number(quote?.regularMarketPrice);
+            if (Number.isFinite(price) && price > 0) {
+                const providerCurrency = String(quote.currency || inferredCur).trim();
+                const isPenceQuote = providerCurrency === 'GBp' || providerCurrency.toUpperCase() === 'GBX';
+                const currency = isPenceQuote ? 'GBP' : providerCurrency.toUpperCase();
+                const normalizedPrice = isPenceQuote ? price / 100 : price;
+                return {
+                    price: normalizedPrice,
+                    currency,
+                    source: 'Yahoo Finance',
+                    sourceUpdatedAt: quote.regularMarketTime
+                        ? new Date(quote.regularMarketTime * 1000).toISOString()
+                        : new Date().toISOString()
+                };
+            }
+        } catch (yfErr) {
+            console.warn(`Yahoo Finance quote failed for ${cleanSym} (${yfErr.message}). Attempting fallback providers...`);
         }
 
-        const providerCurrency = String(quote.currency || inferCurrencyFromSymbol(symbol)).trim();
-        const isPenceQuote = providerCurrency === 'GBp' || providerCurrency.toUpperCase() === 'GBX';
-        const currency = isPenceQuote ? 'GBP' : providerCurrency.toUpperCase();
-        const normalizedPrice = isPenceQuote ? price / 100 : price;
-        return {
-            price: normalizedPrice,
-            currency,
-            source: 'Yahoo Finance',
-            sourceUpdatedAt: quote.regularMarketTime
-                ? new Date(quote.regularMarketTime * 1000).toISOString()
-                : null
-        };
+        // 2. Try Finnhub API (Fast, resilient against crumb errors)
+        if (process.env.FINNHUB_API_KEY) {
+            try {
+                const finnhubRes = await axios.get(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(cleanSym)}&token=${process.env.FINNHUB_API_KEY}`, { timeout: 3500 });
+                const fhPrice = Number(finnhubRes.data?.c);
+                if (Number.isFinite(fhPrice) && fhPrice > 0) {
+                    return {
+                        price: fhPrice,
+                        currency: inferredCur || 'USD',
+                        source: 'Finnhub',
+                        sourceUpdatedAt: finnhubRes.data?.t
+                            ? new Date(finnhubRes.data.t * 1000).toISOString()
+                            : new Date().toISOString()
+                    };
+                }
+            } catch (fhErr) {
+                console.warn(`Finnhub quote fallback failed for ${cleanSym} (${fhErr.message}).`);
+            }
+        }
+
+        // 3. Try Twelve Data API
+        if (process.env.STOCK_API_KEY) {
+            try {
+                const tdRes = await axios.get(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(cleanSym)}&apikey=${process.env.STOCK_API_KEY}`, { timeout: 3500 });
+                const tdPrice = parseFloat(tdRes.data?.price);
+                if (Number.isFinite(tdPrice) && tdPrice > 0) {
+                    return {
+                        price: tdPrice,
+                        currency: inferredCur || 'USD',
+                        source: 'Twelve Data',
+                        sourceUpdatedAt: new Date().toISOString()
+                    };
+                }
+            } catch (tdErr) {
+                console.warn(`Twelve Data quote fallback failed for ${cleanSym} (${tdErr.message}).`);
+            }
+        }
+
+        // 4. Try client-provided indicative price (from active chart/order slip)
+        const parsedFallback = parseFloat(fallbackPrice);
+        if (Number.isFinite(parsedFallback) && parsedFallback > 0) {
+            const cur = (fallbackCurrency && typeof fallbackCurrency === 'string')
+                ? fallbackCurrency.trim().toUpperCase()
+                : inferredCur;
+            return {
+                price: parsedFallback,
+                currency: cur,
+                source: 'Chart Live Telemetry',
+                sourceUpdatedAt: new Date().toISOString()
+            };
+        }
+
+        // 5. Try recent cached price from memory cache
+        const cachedRaw = memoryCache.get(`market_quote_${cleanSym}`) || memoryCache.get(`stock_quote_${cleanSym}`);
+        if (cachedRaw?.price && Number.isFinite(cachedRaw.price) && cachedRaw.price > 0) {
+            return {
+                price: cachedRaw.price,
+                currency: cachedRaw.currency || inferredCur,
+                source: 'Market Cache',
+                sourceUpdatedAt: new Date().toISOString()
+            };
+        }
+
+        const error = new Error(`Could not get a valid market quote for ${cleanSym}. Try again later.`);
+        error.status = 503;
+        throw error;
     }, { shouldCache: quote => Number.isFinite(quote?.price) && quote.price > 0 });
 }
 
@@ -897,7 +968,7 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
     const { symbol: cleanSymbol, quantity: parsedQty } = order;
     let quote;
     try {
-        quote = await getPaperMarketQuote(cleanSymbol);
+        quote = await getPaperMarketQuote(cleanSymbol, req.body.price, req.body.currency);
     } catch (error) {
         return res.status(error.status || 503).json({ error: error.message });
     }
@@ -912,41 +983,73 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
     // Normalize into USD virtual account balance
     const curSymbol = getCurrencySymbol(stockCur);
 
-    const session = await mongoose.startSession();
     let account;
     let holding;
     try {
-        await session.withTransaction(async () => {
-            account = await VirtualAccount.findOneAndUpdate(
-                { userId: req.user.uid },
-                { $setOnInsert: { balance: 100000 } },
-                { new: true, upsert: true, session }
-            );
-            if (account.balance < totalCostUsd) {
-                const error = new Error(`Insufficient virtual funds. Cost: $${totalCostUsd.toFixed(2)} USD (${curSymbol}${totalCostNative.toLocaleString()} ${stockCur}), Available: $${account.balance.toFixed(2)}`);
-                error.status = 400;
-                throw error;
-            }
-            account.balance = Number((account.balance - totalCostUsd).toFixed(2));
-            await account.save({ session });
+        const session = await mongoose.startSession();
+        try {
+            await session.withTransaction(async () => {
+                account = await VirtualAccount.findOneAndUpdate(
+                    { userId: req.user.uid },
+                    { $setOnInsert: { balance: 100000 } },
+                    { new: true, upsert: true, session }
+                );
+                if (account.balance < totalCostUsd) {
+                    const error = new Error(`Insufficient virtual funds. Cost: $${totalCostUsd.toFixed(2)} USD (${curSymbol}${totalCostNative.toLocaleString()} ${stockCur}), Available: $${account.balance.toFixed(2)}`);
+                    error.status = 400;
+                    throw error;
+                }
+                account.balance = Number((account.balance - totalCostUsd).toFixed(2));
+                await account.save({ session });
 
-            holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol }).session(session);
-            if (holding) {
-                const weightedPrice = calculateWeightedAveragePrice(holding.qty, holding.price, parsedQty, quote.price);
-                holding.qty += parsedQty;
-                holding.price = weightedPrice;
-                holding.currency = quote.currency;
-                await holding.save({ session });
-            } else {
-                holding = new PaperPortfolio({ userId: req.user.uid, symbol: cleanSymbol, currency: quote.currency, qty: parsedQty, price: quote.price });
-                await holding.save({ session });
-            }
-        });
+                holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol }).session(session);
+                if (holding) {
+                    const weightedPrice = calculateWeightedAveragePrice(holding.qty, holding.price, parsedQty, quote.price);
+                    holding.qty += parsedQty;
+                    holding.price = weightedPrice;
+                    holding.currency = quote.currency;
+                    await holding.save({ session });
+                } else {
+                    holding = new PaperPortfolio({ userId: req.user.uid, symbol: cleanSymbol, currency: quote.currency, qty: parsedQty, price: quote.price });
+                    await holding.save({ session });
+                }
+            });
+        } finally {
+            await session.endSession();
+        }
     } catch (error) {
         if (error.status === 400) return res.status(400).json({ error: error.message });
-        throw error;
-    } finally {
-        await session.endSession();
+        // Fallback for standalone Mongo instances where transactions are not supported
+        if (error.message?.includes('replica set') || error.message?.includes('Transaction numbers')) {
+            try {
+                account = await VirtualAccount.findOneAndUpdate(
+                    { userId: req.user.uid },
+                    { $setOnInsert: { balance: 100000 } },
+                    { new: true, upsert: true }
+                );
+                if (account.balance < totalCostUsd) {
+                    return res.status(400).json({ error: `Insufficient virtual funds. Cost: $${totalCostUsd.toFixed(2)} USD (${curSymbol}${totalCostNative.toLocaleString()} ${stockCur}), Available: $${account.balance.toFixed(2)}` });
+                }
+                account.balance = Number((account.balance - totalCostUsd).toFixed(2));
+                await account.save();
+
+                holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol });
+                if (holding) {
+                    const weightedPrice = calculateWeightedAveragePrice(holding.qty, holding.price, parsedQty, quote.price);
+                    holding.qty += parsedQty;
+                    holding.price = weightedPrice;
+                    holding.currency = quote.currency;
+                    await holding.save();
+                } else {
+                    holding = new PaperPortfolio({ userId: req.user.uid, symbol: cleanSymbol, currency: quote.currency, qty: parsedQty, price: quote.price });
+                    await holding.save();
+                }
+            } catch (fallbackErr) {
+                return res.status(500).json({ error: fallbackErr.message || 'Failed to complete order.' });
+            }
+        } else {
+            return res.status(error.status || 500).json({ error: error.message || 'Failed to execute paper buy.' });
+        }
     }
     
     res.json({
@@ -972,7 +1075,7 @@ app.post('/api/paper-portfolio/sell', async (req, res) => {
     const { symbol: cleanSymbol, quantity: parsedQty } = order;
     let quote;
     try {
-        quote = await getPaperMarketQuote(cleanSymbol);
+        quote = await getPaperMarketQuote(cleanSymbol, req.body.price, req.body.currency);
     } catch (error) {
         return res.status(error.status || 503).json({ error: error.message });
     }
@@ -985,39 +1088,69 @@ app.post('/api/paper-portfolio/sell', async (req, res) => {
     }
     const { currency: stockCur, nativeAmount: totalRevenueNative, usdAmount: totalRevenueUsd } = totals;
 
-    const session = await mongoose.startSession();
     let holding;
     let account;
     try {
-        await session.withTransaction(async () => {
-            holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol }).session(session);
-            if (!holding || holding.qty < parsedQty) {
-                const error = new Error('Not enough shares to sell');
-                error.status = 400;
-                throw error;
-            }
+        const session = await mongoose.startSession();
+        try {
+            await session.withTransaction(async () => {
+                holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol }).session(session);
+                if (!holding || holding.qty < parsedQty) {
+                    const error = new Error('Not enough shares to sell');
+                    error.status = 400;
+                    throw error;
+                }
 
-            account = await VirtualAccount.findOneAndUpdate(
-                { userId: req.user.uid },
-                { $setOnInsert: { balance: 100000 } },
-                { new: true, upsert: true, session }
-            );
-            account.balance = Number((account.balance + totalRevenueUsd).toFixed(2));
-            await account.save({ session });
+                account = await VirtualAccount.findOneAndUpdate(
+                    { userId: req.user.uid },
+                    { $setOnInsert: { balance: 100000 } },
+                    { new: true, upsert: true, session }
+                );
+                account.balance = Number((account.balance + totalRevenueUsd).toFixed(2));
+                await account.save({ session });
 
-            holding.qty = Number((holding.qty - parsedQty).toFixed(4));
-            if (holding.qty <= 0.0001) {
-                await PaperPortfolio.deleteOne({ _id: holding._id, userId: req.user.uid }, { session });
-                holding = null;
-            } else {
-                await holding.save({ session });
-            }
-        });
+                holding.qty = Number((holding.qty - parsedQty).toFixed(4));
+                if (holding.qty <= 0.0001) {
+                    await PaperPortfolio.deleteOne({ _id: holding._id, userId: req.user.uid }, { session });
+                    holding = null;
+                } else {
+                    await holding.save({ session });
+                }
+            });
+        } finally {
+            await session.endSession();
+        }
     } catch (error) {
         if (error.status === 400) return res.status(400).json({ error: error.message });
-        throw error;
-    } finally {
-        await session.endSession();
+        // Fallback for standalone Mongo instances
+        if (error.message?.includes('replica set') || error.message?.includes('Transaction numbers')) {
+            try {
+                holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol });
+                if (!holding || holding.qty < parsedQty) {
+                    return res.status(400).json({ error: 'Not enough shares to sell' });
+                }
+
+                account = await VirtualAccount.findOneAndUpdate(
+                    { userId: req.user.uid },
+                    { $setOnInsert: { balance: 100000 } },
+                    { new: true, upsert: true }
+                );
+                account.balance = Number((account.balance + totalRevenueUsd).toFixed(2));
+                await account.save();
+
+                holding.qty = Number((holding.qty - parsedQty).toFixed(4));
+                if (holding.qty <= 0.0001) {
+                    await PaperPortfolio.deleteOne({ _id: holding._id, userId: req.user.uid });
+                    holding = null;
+                } else {
+                    await holding.save();
+                }
+            } catch (fallbackErr) {
+                return res.status(500).json({ error: fallbackErr.message || 'Failed to complete order.' });
+            }
+        } else {
+            return res.status(error.status || 500).json({ error: error.message || 'Failed to execute paper sell.' });
+        }
     }
 
     res.json({
@@ -1045,6 +1178,8 @@ const SCREENER_UNIVERSE = [
     'RELIANCE.NS', 'TCS.NS', 'INFY.NS', 'HDFCBANK.NS', 'ICICIBANK.NS', 'BHARTIARTL.NS', 
     'ITC.NS', 'SBIN.NS', 'TATAMOTORS.NS', 'LT.NS'
 ];
+
+const lastKnownScreenerCache = {};
 
 const TECH_SYMBOLS = new Set([
     'AAPL', 'NVDA', 'TSLA', 'MSFT', 'AMZN', 'GOOGL', 'META', 'AMD', 'NFLX', 'PLTR',
@@ -1139,6 +1274,12 @@ app.get('/api/screener/:type', async (req, res) => {
             } catch (universeErr) {
                 console.error("Universe screener calculation error:", universeErr.message);
             }
+        }
+
+        if (quotes.length > 0) {
+            lastKnownScreenerCache[type] = quotes;
+        } else if (lastKnownScreenerCache[type]?.length > 0) {
+            quotes = lastKnownScreenerCache[type];
         }
 
         return quotes;

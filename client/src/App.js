@@ -74,6 +74,19 @@ function App() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
   const [isQuantLabOpen, setIsQuantLabOpen] = useState(false);
+  const [orderModal, setOrderModal] = useState({
+    isOpen: false,
+    type: 'BUY', // 'BUY' | 'SELL' | 'PORTFOLIO' | 'ALERT'
+    symbol: '',
+    price: 0,
+    currency: 'USD',
+    sharesHeld: 0,
+    qty: 1,
+    alertCondition: 'ABOVE',
+    targetPrice: '',
+    isSubmitting: false,
+    error: ''
+  });
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'markets' | 'portfolio' | 'screener' | 'academy'
   const [portfolioPrices, setPortfolioPrices] = useState({});
   const [fxRate, setFxRate] = useState(() => {
@@ -429,105 +442,174 @@ function App() {
     }
     if (!currUser) return;
 
+    const currentSymbol = data?.meta?.symbol || symbol;
+    const stockCur = data?.meta?.currency || inferCurrencyFromSymbol(currentSymbol);
+    const priceNative = parseFloat(data?.values?.[0]?.close || 0);
+
     if (type === 'WATCH') {
-      const existingItem = watchlist.find(item => item.symbol === data?.meta?.symbol);
+      const existingItem = watchlist.find(item => item.symbol === currentSymbol);
       if (existingItem) {
         try {
-          await axios.delete(`${API_URL}/api/watchlist/${currUser.uid}/${data?.meta?.symbol}`);
+          await axios.delete(`${API_URL}/api/watchlist/${currUser.uid}/${currentSymbol}`);
           fetchWatchlist(currUser.uid);
-          showToast(`Removed ${data?.meta?.symbol} from watchlist`);
+          showToast(`Removed ${currentSymbol} from watchlist`);
         } catch (e) {
           showToast('Error removing from watchlist', 'error');
         }
       } else {
         try {
-          await axios.post(`${API_URL}/api/watchlist`, { symbol: data?.meta?.symbol, userId: currUser.uid });
+          await axios.post(`${API_URL}/api/watchlist`, { symbol: currentSymbol, userId: currUser.uid });
           fetchWatchlist(currUser.uid);
-          showToast(`Added ${data?.meta?.symbol} to watchlist`);
+          showToast(`Added ${currentSymbol} to watchlist`);
         } catch (e) {
           showToast('Error adding to watchlist', 'error');
         }
       }
+    } else if (type === 'BUY') {
+      const held = paperPortfolio.find(p => p.symbol === currentSymbol)?.qty || 0;
+      setOrderModal({
+        isOpen: true,
+        type: 'BUY',
+        symbol: currentSymbol,
+        price: priceNative,
+        currency: stockCur,
+        sharesHeld: held,
+        qty: 1,
+        alertCondition: 'ABOVE',
+        targetPrice: '',
+        isSubmitting: false,
+        error: ''
+      });
+    } else if (type === 'SELL') {
+      const held = paperPortfolio.find(p => p.symbol === currentSymbol)?.qty || 0;
+      setOrderModal({
+        isOpen: true,
+        type: 'SELL',
+        symbol: currentSymbol,
+        price: priceNative,
+        currency: stockCur,
+        sharesHeld: held,
+        qty: held > 0 ? held : 1,
+        alertCondition: 'ABOVE',
+        targetPrice: '',
+        isSubmitting: false,
+        error: ''
+      });
     } else if (type === 'PORTFOLIO') {
-      const qty = prompt(`Number of shares of ${data?.meta?.symbol} to add to Real Portfolio:`);
-      if (qty && !isNaN(qty) && parseFloat(qty) > 0) {
+      setOrderModal({
+        isOpen: true,
+        type: 'PORTFOLIO',
+        symbol: currentSymbol,
+        price: priceNative,
+        currency: stockCur,
+        sharesHeld: 0,
+        qty: 1,
+        alertCondition: 'ABOVE',
+        targetPrice: '',
+        isSubmitting: false,
+        error: ''
+      });
+    } else if (type === 'ALERT') {
+      setOrderModal({
+        isOpen: true,
+        type: 'ALERT',
+        symbol: currentSymbol,
+        price: priceNative,
+        currency: stockCur,
+        sharesHeld: 0,
+        qty: 1,
+        alertCondition: 'ABOVE',
+        targetPrice: priceNative ? (priceNative * 1.05).toFixed(2) : '',
+        isSubmitting: false,
+        error: ''
+      });
+    }
+  };
+
+  const executeModalOrder = async () => {
+    let currUser = user;
+    if (!currUser) {
+      try {
+        const result = await signInWithPopup(auth, provider);
+        currUser = result.user;
+        setUser(currUser);
+      } catch (error) {
+        return;
+      }
+    }
+    if (!currUser) return;
+
+    setOrderModal(prev => ({ ...prev, isSubmitting: true, error: '' }));
+
+    try {
+      if (orderModal.type === 'BUY') {
+        const qty = parseFloat(orderModal.qty);
+        if (!qty || qty <= 0) {
+          setOrderModal(prev => ({ ...prev, isSubmitting: false, error: 'Please enter a valid share quantity.' }));
+          return;
+        }
+        const res = await axios.post(`${API_URL}/api/paper-portfolio/buy`, {
+          userId: currUser.uid,
+          symbol: orderModal.symbol,
+          qty,
+          price: orderModal.price,
+          currency: orderModal.currency
+        });
+        setVirtualBalance(res.data.balance);
+        fetchPaperPortfolio(currUser.uid);
+        setOrderModal(prev => ({ ...prev, isOpen: false, isSubmitting: false }));
+        showToast(`Bought ${qty} ${orderModal.symbol} @ ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource || 'Live'})`);
+      } else if (orderModal.type === 'SELL') {
+        const qty = parseFloat(orderModal.qty);
+        if (!qty || qty <= 0) {
+          setOrderModal(prev => ({ ...prev, isSubmitting: false, error: 'Please enter a valid share quantity.' }));
+          return;
+        }
+        const res = await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
+          userId: currUser.uid,
+          symbol: orderModal.symbol,
+          qty,
+          price: orderModal.price,
+          currency: orderModal.currency
+        });
+        setVirtualBalance(res.data.balance);
+        fetchPaperPortfolio(currUser.uid);
+        setOrderModal(prev => ({ ...prev, isOpen: false, isSubmitting: false }));
+        showToast(`Sold ${qty} ${orderModal.symbol} @ ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource || 'Live'})`);
+      } else if (orderModal.type === 'PORTFOLIO') {
+        const qty = parseFloat(orderModal.qty);
+        if (!qty || qty <= 0) {
+          setOrderModal(prev => ({ ...prev, isSubmitting: false, error: 'Please enter a valid share quantity.' }));
+          return;
+        }
         await axios.post(`${API_URL}/api/portfolio`, {
           userId: currUser.uid,
-          symbol: data?.meta?.symbol,
-          qty: parseFloat(qty),
-          price: data?.values[0].close
+          symbol: orderModal.symbol,
+          qty,
+          price: orderModal.price
         });
         fetchPortfolio(currUser.uid);
-        showToast(`Recorded ${qty} shares in Portfolio`);
-      }
-    } else if (type === 'BUY') {
-      const stockCur = data?.meta?.currency || inferCurrencyFromSymbol(data?.meta?.symbol);
-      const stockCurSym = getCurrencySymbol(stockCur);
-      const priceNative = parseFloat(data?.values[0].close);
-      const priceUsd = convertPrice(priceNative, stockCur, 'USD', fxRates);
-      const fxRateDisplay = fxRates[stockCur] || 1;
-      const promptText = stockCur !== 'USD'
-        ? `Paper Order: Buy ${data?.meta?.symbol}\nLast chart close (indicative): ${stockCurSym}${formatPrice(priceNative, stockCur)} ${stockCur} (~$${priceUsd.toFixed(2)} USD at ${stockCurSym}${formatPrice(fxRateDisplay, stockCur)}/$)\nFinal fill uses the latest server quote.\nAvailable Cash: $${virtualBalance.toFixed(2)} USD\nShares to BUY:`
-        : `Paper Order: Buy ${data?.meta?.symbol}\nLast chart close (indicative): $${priceNative.toFixed(2)}\nFinal fill uses the latest server quote.\nAvailable Cash: $${virtualBalance.toFixed(2)} USD\nShares to BUY:`;
-      const qtyStr = prompt(promptText);
-      if (qtyStr && !isNaN(qtyStr) && parseFloat(qtyStr) > 0) {
-        const qty = parseFloat(qtyStr);
-        try {
-          const res = await axios.post(`${API_URL}/api/paper-portfolio/buy`, {
-            userId: currUser.uid,
-            symbol: data?.meta?.symbol,
-            qty
-          });
-          setVirtualBalance(res.data.balance);
-          fetchPaperPortfolio(currUser.uid);
-          showToast(`Bought ${qty} ${data?.meta?.symbol} @ ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource})`);
-        } catch (err) {
-          showToast(err.response?.data?.error || 'Order rejected', 'error');
+        setOrderModal(prev => ({ ...prev, isOpen: false, isSubmitting: false }));
+        showToast(`Recorded ${qty} shares of ${orderModal.symbol} in Portfolio`);
+      } else if (orderModal.type === 'ALERT') {
+        const parsedTarget = parseFloat(orderModal.targetPrice);
+        if (!parsedTarget || parsedTarget <= 0) {
+          setOrderModal(prev => ({ ...prev, isSubmitting: false, error: 'Please enter a valid target trigger price.' }));
+          return;
         }
-      }
-    } else if (type === 'SELL') {
-      const stockCur = data?.meta?.currency || inferCurrencyFromSymbol(data?.meta?.symbol);
-      const stockCurSym = getCurrencySymbol(stockCur);
-      const priceNative = parseFloat(data?.values[0].close);
-      const priceUsd = convertPrice(priceNative, stockCur, 'USD', fxRates);
-      const promptText = stockCur !== 'USD'
-        ? `Paper Order: Sell ${data?.meta?.symbol}\nLast chart close (indicative): ${stockCurSym}${formatPrice(priceNative, stockCur)} ${stockCur} (~$${priceUsd.toFixed(2)} USD)\nFinal fill uses the latest server quote.\nEnter shares to SELL:`
-        : `Paper Order: Sell ${data?.meta?.symbol}\nLast chart close (indicative): $${priceNative.toFixed(2)}\nFinal fill uses the latest server quote.\nEnter shares to SELL:`;
-      const qtyStr = prompt(promptText);
-      if (qtyStr && !isNaN(qtyStr) && parseFloat(qtyStr) > 0) {
-        const qty = parseFloat(qtyStr);
-        try {
-          const res = await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
-            userId: currUser.uid,
-            symbol: data?.meta?.symbol,
-            qty
-          });
-          setVirtualBalance(res.data.balance);
-          fetchPaperPortfolio(currUser.uid);
-          showToast(`Sold ${qty} ${data?.meta?.symbol} @ ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource})`);
-        } catch (err) {
-          showToast(err.response?.data?.error || 'Order rejected', 'error');
-        }
-      }
-    } else if (type === 'ALERT') {
-      const stockCur = data?.meta?.currency || inferCurrencyFromSymbol(data?.meta?.symbol);
-      const stockCurSym = getCurrencySymbol(stockCur);
-      const closePrice = parseFloat(data?.values[0].close);
-      const targetPriceStr = prompt(
-        `Set Alert for ${data?.meta?.symbol}\nCurrent Price: ${stockCurSym}${formatPrice(closePrice, stockCur)} ${stockCur}\nTarget Price trigger:`
-      );
-      if (targetPriceStr && !isNaN(targetPriceStr) && parseFloat(targetPriceStr) > 0) {
-        const targetPrice = parseFloat(targetPriceStr);
-        const condition = targetPrice > closePrice ? 'ABOVE' : 'BELOW';
         await axios.post(`${API_URL}/api/alerts`, {
           userId: currUser.uid,
-          symbol: data?.meta?.symbol,
-          targetPrice,
-          condition
+          symbol: orderModal.symbol,
+          targetPrice: parsedTarget,
+          condition: orderModal.alertCondition
         });
         fetchAlerts(currUser.uid);
-        showToast(`Alert registered: ${data?.meta?.symbol} ${condition} ${stockCurSym}${formatPrice(targetPrice, stockCur)}`);
+        setOrderModal(prev => ({ ...prev, isOpen: false, isSubmitting: false }));
+        showToast(`Alert registered: ${orderModal.symbol} ${orderModal.alertCondition} ${getCurrencySymbol(orderModal.currency)}${formatPrice(parsedTarget, orderModal.currency)}`);
       }
+    } catch (err) {
+      const errorMsg = err.response?.data?.error || err.message || 'Order execution failed.';
+      setOrderModal(prev => ({ ...prev, isSubmitting: false, error: errorMsg }));
     }
   };
 
@@ -1723,14 +1805,20 @@ function App() {
                                 <button
                                 className="btn btn-danger btn-sm"
                                 onClick={async () => {
-                                  const res = await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
-                                    userId: user.uid,
-                                    symbol: p.symbol,
-                                    qty: p.qty
-                                  });
-                                  fetchPaperPortfolio(user.uid);
-                                  fetchVirtualBalance(user.uid);
-                                  showToast(`Closed ${p.symbol} at ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource})`);
+                                  try {
+                                    const res = await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
+                                      userId: user.uid,
+                                      symbol: p.symbol,
+                                      qty: p.qty,
+                                      price: p.price,
+                                      currency: p.currency
+                                    });
+                                    fetchPaperPortfolio(user.uid);
+                                    fetchVirtualBalance(user.uid);
+                                    showToast(`Closed ${p.symbol} at ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource || 'Live'})`);
+                                  } catch (err) {
+                                    showToast(err.response?.data?.error || 'Failed to close position', 'error');
+                                  }
                                 }}
                               >
                                 Close
@@ -1754,6 +1842,264 @@ function App() {
           )}
         </main>
       </div>
+
+      {/* Institutional Paper Order & Action Modal */}
+      {orderModal.isOpen && (
+        <div
+          className="order-modal-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !orderModal.isSubmitting) {
+              setOrderModal(prev => ({ ...prev, isOpen: false }));
+            }
+          }}
+        >
+          <div className="order-modal-card">
+            <div className="order-modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span className={`term-badge font-mono ${orderModal.type === 'BUY' ? 'pos' : orderModal.type === 'SELL' ? 'neg' : 'neutral'}`}>
+                  {orderModal.type === 'BUY' ? 'PAPER BUY' : orderModal.type === 'SELL' ? 'PAPER SELL' : orderModal.type === 'PORTFOLIO' ? 'ADD HOLDING' : 'PRICE ALERT'}
+                </span>
+                <span className="order-modal-sym font-mono">{orderModal.symbol}</span>
+              </div>
+              <button
+                className="order-modal-close"
+                onClick={() => !orderModal.isSubmitting && setOrderModal(prev => ({ ...prev, isOpen: false }))}
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="order-modal-body">
+              {/* Market Telemetry Row */}
+              <div className="order-price-bar">
+                <div>
+                  <span className="order-info-label">Indicative Market Price</span>
+                  <div className="order-price-display font-mono">
+                    <span className="status-dot"></span>
+                    {getCurrencySymbol(orderModal.currency)}{formatPrice(orderModal.price, orderModal.currency)}
+                    {orderModal.currency !== 'USD' && (
+                      <span className="order-price-converted">
+                        ≈ ${convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates).toFixed(2)} USD
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  {['BUY', 'SELL'].includes(orderModal.type) && (
+                    <>
+                      <span className="order-info-label">Available Sim Cash</span>
+                      <span className="order-balance-val font-mono">
+                        ${virtualBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </>
+                  )}
+                  {orderModal.type === 'SELL' && (
+                    <span className="order-shares-held font-mono">
+                      Held: {orderModal.sharesHeld} shares
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Input fields based on orderModal.type */}
+              {orderModal.type === 'ALERT' ? (
+                <div className="order-input-group">
+                  <label className="order-input-label">Alert Trigger Condition</label>
+                  <div className="order-condition-selector">
+                    <button
+                      type="button"
+                      className={`order-condition-btn ${orderModal.alertCondition === 'ABOVE' ? 'active pos' : ''}`}
+                      onClick={() => setOrderModal(prev => ({ ...prev, alertCondition: 'ABOVE' }))}
+                    >
+                      Price Rises Above (▲)
+                    </button>
+                    <button
+                      type="button"
+                      className={`order-condition-btn ${orderModal.alertCondition === 'BELOW' ? 'active neg' : ''}`}
+                      onClick={() => setOrderModal(prev => ({ ...prev, alertCondition: 'BELOW' }))}
+                    >
+                      Price Drops Below (▼)
+                    </button>
+                  </div>
+
+                  <label className="order-input-label" style={{ marginTop: '14px' }}>
+                    Target Trigger Price ({orderModal.currency})
+                  </label>
+                  <div className="order-qty-row">
+                    <input
+                      type="number"
+                      step="any"
+                      min="0.01"
+                      className="order-number-input font-mono"
+                      value={orderModal.targetPrice}
+                      onChange={(e) => setOrderModal(prev => ({ ...prev, targetPrice: e.target.value, error: '' }))}
+                      placeholder="Enter target price"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="order-input-group">
+                  <label className="order-input-label">
+                    {orderModal.type === 'PORTFOLIO' ? 'Shares to Record' : 'Order Quantity (Shares)'}
+                  </label>
+                  <div className="order-qty-row">
+                    <button
+                      type="button"
+                      className="order-qty-step-btn"
+                      onClick={() => setOrderModal(prev => ({ ...prev, qty: Math.max(1, (parseFloat(prev.qty) || 1) - 1), error: '' }))}
+                    >
+                      -
+                    </button>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0.0001"
+                      className="order-number-input font-mono"
+                      value={orderModal.qty}
+                      onChange={(e) => setOrderModal(prev => ({ ...prev, qty: e.target.value, error: '' }))}
+                      placeholder="Shares"
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      className="order-qty-step-btn"
+                      onClick={() => setOrderModal(prev => ({ ...prev, qty: (parseFloat(prev.qty) || 0) + 1, error: '' }))}
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  {/* Quick Presets */}
+                  <div className="order-presets-row">
+                    {[1, 5, 10, 25, 50, 100].map(n => (
+                      <button
+                        key={n}
+                        type="button"
+                        className="order-preset-pill"
+                        onClick={() => setOrderModal(prev => ({ ...prev, qty: n, error: '' }))}
+                      >
+                        +{n}
+                      </button>
+                    ))}
+                    {orderModal.type === 'BUY' && (
+                      <button
+                        type="button"
+                        className="order-preset-pill max-btn"
+                        onClick={() => {
+                          const priceUsd = convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates);
+                          const maxShares = priceUsd > 0 ? Math.floor(virtualBalance / priceUsd) : 0;
+                          setOrderModal(prev => ({ ...prev, qty: Math.max(1, maxShares), error: '' }));
+                        }}
+                      >
+                        Max Buy
+                      </button>
+                    )}
+                    {orderModal.type === 'SELL' && orderModal.sharesHeld > 0 && (
+                      <button
+                        type="button"
+                        className="order-preset-pill max-btn"
+                        onClick={() => setOrderModal(prev => ({ ...prev, qty: orderModal.sharesHeld, error: '' }))}
+                      >
+                        All ({orderModal.sharesHeld})
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Order Calculations Breakdown (for BUY/SELL) */}
+              {['BUY', 'SELL'].includes(orderModal.type) && (() => {
+                const parsedQty = parseFloat(orderModal.qty) || 0;
+                const totalNative = parsedQty * orderModal.price;
+                const totalUsd = convertPrice(totalNative, orderModal.currency, 'USD', fxRates);
+                const isInsufficient = orderModal.type === 'BUY' && totalUsd > virtualBalance;
+                const isOverSelling = orderModal.type === 'SELL' && parsedQty > orderModal.sharesHeld;
+                const remainingCash = orderModal.type === 'BUY' ? virtualBalance - totalUsd : virtualBalance + totalUsd;
+
+                return (
+                  <div className="order-calculation-card">
+                    <div className="order-calc-row">
+                      <span className="order-calc-label">Estimated Total ({orderModal.currency})</span>
+                      <span className="order-calc-val font-mono">
+                        {getCurrencySymbol(orderModal.currency)}{formatPrice(totalNative, orderModal.currency)}
+                      </span>
+                    </div>
+                    {orderModal.currency !== 'USD' && (
+                      <div className="order-calc-row">
+                        <span className="order-calc-label">Normalized Total (USD)</span>
+                        <span className="order-calc-val font-mono">≈ ${totalUsd.toFixed(2)} USD</span>
+                      </div>
+                    )}
+                    <div className="order-calc-row">
+                      <span className="order-calc-label">Estimated Cash Balance</span>
+                      <span className={`order-calc-val font-mono ${isInsufficient ? 'neg' : ''}`}>
+                        ${Math.max(0, remainingCash).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                      </span>
+                    </div>
+                    {isInsufficient && (
+                      <div className="order-validation-msg neg">
+                        ⚠️ Insufficient virtual capital. Need ${totalUsd.toFixed(2)} USD.
+                      </div>
+                    )}
+                    {isOverSelling && (
+                      <div className="order-validation-msg neg">
+                        ⚠️ Cannot sell more than currently held ({orderModal.sharesHeld} shares).
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Error message from backend */}
+              {orderModal.error && (
+                <div className="order-validation-msg neg">
+                  {orderModal.error}
+                </div>
+              )}
+            </div>
+
+            <div className="order-modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={orderModal.isSubmitting}
+                onClick={() => setOrderModal(prev => ({ ...prev, isOpen: false }))}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={`btn ${orderModal.type === 'BUY' ? 'btn-primary' : orderModal.type === 'SELL' ? 'btn-danger' : 'btn-primary'}`}
+                disabled={
+                  orderModal.isSubmitting ||
+                  (orderModal.type === 'ALERT' && (!parseFloat(orderModal.targetPrice) || parseFloat(orderModal.targetPrice) <= 0)) ||
+                  (orderModal.type !== 'ALERT' && (!parseFloat(orderModal.qty) || parseFloat(orderModal.qty) <= 0)) ||
+                  (orderModal.type === 'BUY' && convertPrice((parseFloat(orderModal.qty) || 0) * orderModal.price, orderModal.currency, 'USD', fxRates) > virtualBalance) ||
+                  (orderModal.type === 'SELL' && (parseFloat(orderModal.qty) || 0) > orderModal.sharesHeld)
+                }
+                onClick={executeModalOrder}
+              >
+                {orderModal.isSubmitting ? (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <RefreshCw size={14} className="spin" /> Executing...
+                  </span>
+                ) : (
+                  <span>
+                    {orderModal.type === 'BUY'
+                      ? 'Execute Paper Buy'
+                      : orderModal.type === 'SELL'
+                      ? 'Execute Paper Sell'
+                      : orderModal.type === 'PORTFOLIO'
+                      ? 'Add to Portfolio'
+                      : 'Create Price Alert'}
+                  </span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Quant Lab Modal */}
       {isQuantLabOpen && (
