@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+        working-directory: client
+      - run: npm test -- --watchAll=false --runInBand
+        working-directory: client
+      - run: npm run build
+        working-directory: client
+      - run: npm audit --audit-level=high
+        working-directory: client
+
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - run: npm test
+        working-directory: server
+      - run: npm audit --audit-level=moderate
+        working-directory: server
+      - run: npm run build
+        working-directory: server
