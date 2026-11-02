@@ -67,7 +67,7 @@ stock-insight-dashboard/
 ## ⚙️ Local Development Setup
 
 ### 1. Prerequisites
-- Node.js (v18+ recommended)
+- Node.js 20.19+ (required by the current Mongoose version)
 - MongoDB account/cluster
 - API Keys for Groq, Twelve Data, and Finnhub
 - Firebase Project for authentication
@@ -86,7 +86,16 @@ MONGO_URI=your_mongodb_connection_string
 GROQ_KEY=your_groq_api_key
 STOCK_API_KEY=your_twelve_data_api_key
 FINNHUB_API_KEY=your_finnhub_api_key
+EXCHANGERATE_API_KEY=your_exchangerate_api_key
+FIREBASE_PROJECT_ID=finintel-a64ec
 ```
+
+The backend verifies Firebase ID tokens on all user-data routes. Set
+`FIREBASE_PROJECT_ID` to the same project as the client if you use a different
+Firebase project. Token signature verification uses Google's public signing
+certificates, so a Firebase service account key is not required.
+Paper trading uses MongoDB transactions; use MongoDB Atlas or another replica
+set deployment rather than a standalone MongoDB server.
 
 Start the backend server:
 ```bash
