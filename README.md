@@ -2,17 +2,16 @@
 [![Live Demo](https://img.shields.io/badge/Live_Demo-finintel.pages.dev-blue?style=for-the-badge)](https://finintel.pages.dev/)
 [![C++ Quant Core](https://img.shields.io/badge/Compute_Core-C%2B%2B20_%7C_OpenMP-orange?style=for-the-badge)](https://github.com/)
 
-FinIntel is an institutional-grade financial dashboard, portfolio analytics system, and quantitative risk platform. Combining a modern full-stack web interface with a **native high-performance C++20 quantitative computing engine**, it delivers sub-millisecond multi-asset Monte Carlo simulations, Value-at-Risk (VaR/CVaR), and Markowitz Modern Portfolio Theory optimization.
+FinIntel is a full-stack investing dashboard and portfolio analytics project. It combines a React interface, an Express and MongoDB API, market-data integrations, Firebase authentication, paper trading, and a native C++20 engine for portfolio simulation and risk analysis.
 
 ## 🚀 Key Features
 
-- **⚡ C++20 Quantitative Computing Core (New!)**:
+- **C++20 Quantitative Computing Core**:
   - **Multi-Asset Monte Carlo Simulation**: Simulates up to 250,000 portfolio trajectories across correlated assets using Geometric Brownian Motion (GBM) with Cholesky decomposition.
-  - **OpenMP Multi-Threaded Parallelism**: 8 parallel worker threads using 64-bit Mersenne Twister PRNG (`std::mt19937_64`) processing over **75,000,000 simulation steps/sec**.
-  - **Institutional Risk Metrics**: Empirical & Parametric 95% and 99% Value-at-Risk (VaR), Conditional VaR (Expected Shortfall), and Maximum Drawdown distributions.
-  - **Markowitz Efficient Frontier & Portfolio Optimization**: Solves for the Maximum Sharpe Ratio (Tangency) Portfolio and Minimum Volatility Portfolio with dynamic rebalancing recommendations.
-  - **Live V8 vs C++ Engine Benchmarking**: Live side-by-side execution timer demonstrating 4x to 80x speedup over single-threaded JavaScript.
-- **Real-Time Market Data**: Search global stocks, high-frequency ticker tapes, and interactive charts (Lightweight Charts).
+  - Simulates multi-asset price paths using geometric Brownian motion and correlated random inputs.
+  - Computes VaR, CVaR, drawdown summaries, and portfolio frontier candidates for the supplied assumptions.
+  - Reports runtime and throughput for the selected engine; measurements depend on hardware, inputs, and build configuration. JavaScript fallback timings are not a like-for-like comparison with the native engine.
+- **Market Data**: Search supported stocks, view ticker quotes and charts, and see provider and update-time details for currency rates. Provider data may be delayed or differ across sources.
 - **AI Market Analyst**: Leverages LLaMA (via Groq) to provide daily morning briefings, analyze news sentiment, and generate actionable technical insights.
 - **Paper Trading Simulator**: Practice trading risk-free with virtual accounts and real-time P&L tracking.
 - **Real Portfolio Management**: Track actual holdings with real-time profit/loss calculations and export reports to **CSV** or **PDF**.
@@ -23,9 +22,8 @@ FinIntel is an institutional-grade financial dashboard, portfolio analytics syst
 
 ## 🛠️ Tech Stack
 
-**High-Performance Quantitative Core:**
-- **C++20** compiled with MSYS2 GCC 14.2 (UCRT64, x86_64)
-- **OpenMP** parallel processing & SIMD vectorization
+**Quantitative Core:**
+- C++20 with OpenMP parallel processing
 - Multi-asset Cholesky decomposition & stochastic differential equation discretization
 
 **Frontend:**
@@ -36,7 +34,7 @@ FinIntel is an institutional-grade financial dashboard, portfolio analytics syst
 **Backend:**
 - Node.js & Express.js
 - MongoDB & Mongoose
-- Child-process IPC pipeline streaming binary JSON directly to the C++ Core
+- Child-process JSON interface to the C++ core
 - Node-Cron, Node-Cache, Groq SDK (LLaMA AI)
 
 ---
