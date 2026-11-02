@@ -649,6 +649,8 @@ app.delete('/api/portfolio/:id', async (req, res) => {
 async function loadGlobalFxRates() {
     const rates = { ...DEFAULT_FX_RATES };
     let fetched = false;
+    let source = 'Static fallback';
+    let sourceUpdatedAt = null;
 
     // 1. Primary: Dedicated ExchangeRate-API v6 Live Feed (using user API Key)
     const apiKey = process.env.EXCHANGERATE_API_KEY;
@@ -662,6 +664,9 @@ async function loadGlobalFxRates() {
                     }
                 }
                 fetched = true;
+                source = 'ExchangeRate-API';
+                sourceUpdatedAt = fxRes.data.time_last_update_utc ||
+                    (fxRes.data.time_last_update_unix ? new Date(fxRes.data.time_last_update_unix * 1000).toISOString() : null);
             }
         } catch (e) {
             console.warn("ExchangeRate-API provider notice:", e.message);
@@ -674,11 +679,16 @@ async function loadGlobalFxRates() {
             const pairs = ['KRW=X', 'USDINR=X', 'JPY=X', 'CAD=X', 'HKD=X', 'EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'AED=X', 'SAR=X'];
             const quotes = await yahooFinance.quote(pairs, {}, { validateResult: false });
             if (Array.isArray(quotes)) {
+                let usdInrQuoteFound = false;
                 for (const q of quotes) {
                     const val = q?.regularMarketPrice;
                     if (!Number.isFinite(val) || val <= 0) continue;
                     if (q.symbol === 'KRW=X') rates.KRW = val;
-                    else if (q.symbol === 'USDINR=X') rates.INR = val;
+                    else if (q.symbol === 'USDINR=X') {
+                        rates.INR = val;
+                        usdInrQuoteFound = true;
+                        sourceUpdatedAt = q.regularMarketTime ? new Date(q.regularMarketTime * 1000).toISOString() : null;
+                    }
                     else if (q.symbol === 'JPY=X') rates.JPY = val;
                     else if (q.symbol === 'CAD=X') rates.CAD = val;
                     else if (q.symbol === 'HKD=X') rates.HKD = val;
@@ -688,7 +698,10 @@ async function loadGlobalFxRates() {
                     else if (q.symbol === 'GBPUSD=X') rates.GBP = 1 / val;
                     else if (q.symbol === 'AUDUSD=X') rates.AUD = 1 / val;
                 }
-                fetched = true;
+                if (usdInrQuoteFound) {
+                    fetched = true;
+                    source = 'Yahoo Finance';
+                }
             }
         } catch (e) {
             console.warn("Yahoo FX failover notice:", e.message);
@@ -706,18 +719,34 @@ async function loadGlobalFxRates() {
                     }
                 }
                 fetched = true;
+                source = 'Open Exchange Rates';
+                sourceUpdatedAt = fallbackRes.data.time_last_update_utc ||
+                    (fallbackRes.data.time_last_update_unix ? new Date(fallbackRes.data.time_last_update_unix * 1000).toISOString() : null);
             }
         } catch (e) {
             console.warn("Tertiary OpenER failover notice:", e.message);
         }
     }
 
-    return rates;
+    return {
+        rates,
+        source,
+        sourceUpdatedAt,
+        fetchedAt: new Date().toISOString(),
+        fallback: !fetched
+    };
+}
+
+async function getGlobalFxQuote(forceRefresh = false) {
+    if (forceRefresh) myCache.del('GLOBAL_FX_RATES');
+    const servedFromCache = !forceRefresh && myCache.get('GLOBAL_FX_RATES') !== undefined;
+    const quote = await getOrLoad('GLOBAL_FX_RATES', 60, loadGlobalFxRates);
+    return { ...quote, cached: servedFromCache };
 }
 
 async function getGlobalFxRates(forceRefresh = false) {
-    if (forceRefresh) myCache.del('GLOBAL_FX_RATES');
-    return getOrLoad('GLOBAL_FX_RATES', 60, loadGlobalFxRates);
+    const quote = await getGlobalFxQuote(forceRefresh);
+    return quote.rates;
 }
 
 async function getUsdInrRate() {
@@ -732,14 +761,18 @@ app.get('/api/forex/rate', async (req, res) => {
         myCache.del('GLOBAL_FX_RATES');
     }
     try {
-        const rates = await getGlobalFxRates(force);
-        const cached = !force && !!myCache.get('GLOBAL_FX_RATES');
+        const quote = await getGlobalFxQuote(force);
+        const { rates } = quote;
         res.json({
             base: 'USD',
             target: 'INR',
             rate: rates.INR || DEFAULT_FX_RATES.INR,
             rates,
-            cached,
+            cached: quote.cached,
+            source: quote.source,
+            sourceUpdatedAt: quote.sourceUpdatedAt,
+            fetchedAt: quote.fetchedAt,
+            fallback: quote.fallback,
             timestamp: new Date().toISOString()
         });
     } catch (e) {
@@ -749,6 +782,9 @@ app.get('/api/forex/rate', async (req, res) => {
             rate: DEFAULT_FX_RATES.INR,
             rates: DEFAULT_FX_RATES,
             cached: false,
+            source: 'Static fallback',
+            sourceUpdatedAt: null,
+            fetchedAt: new Date().toISOString(),
             fallback: true,
             timestamp: new Date().toISOString()
         });
@@ -758,12 +794,17 @@ app.get('/api/forex/rate', async (req, res) => {
 // Explicit Cache Flush Endpoint
 app.post('/api/forex/refresh', async (req, res) => {
     myCache.del('GLOBAL_FX_RATES');
-    const rates = await getGlobalFxRates(true);
+    const quote = await getGlobalFxQuote(true);
+    const { rates } = quote;
     res.json({
         success: true,
         message: 'Forex cache invalidated and rates re-synchronized',
         rate: rates.INR || DEFAULT_FX_RATES.INR,
         rates,
+        source: quote.source,
+        sourceUpdatedAt: quote.sourceUpdatedAt,
+        fetchedAt: quote.fetchedAt,
+        fallback: quote.fallback,
         timestamp: new Date().toISOString()
     });
 });

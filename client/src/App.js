@@ -96,11 +96,17 @@ function App() {
   const [isFxLoading, setIsFxLoading] = useState(false);
   const [fxLastUpdated, setFxLastUpdated] = useState(() => {
     try {
-      const cached = localStorage.getItem('finintel_fx_time');
+      const cached = localStorage.getItem('finintel_fx_provider_time');
       return cached ? new Date(cached) : null;
     } catch (e) {
       return null;
     }
+  });
+  const [fxRateSource, setFxRateSource] = useState(() => {
+    try { return localStorage.getItem('finintel_fx_provider') || 'Waiting for quote'; } catch (e) { return 'Waiting for quote'; }
+  });
+  const [fxWasCached, setFxWasCached] = useState(() => {
+    try { return localStorage.getItem('finintel_fx_cached') === 'true'; } catch (e) { return false; }
   });
   const [baseCurrency, setBaseCurrency] = useState(() => {
     try {
@@ -172,9 +178,20 @@ function App() {
             return merged;
           });
         }
-        const now = new Date();
-        setFxLastUpdated(now);
-        try { localStorage.setItem('finintel_fx_time', now.toISOString()); } catch (e) {}
+        const sourceTimestamp = res.data?.sourceUpdatedAt;
+        const providerTime = sourceTimestamp ? new Date(sourceTimestamp) : null;
+        setFxLastUpdated(providerTime && Number.isFinite(providerTime.getTime()) ? providerTime : null);
+        const source = res.data?.source || 'Unknown source';
+        const cached = Boolean(res.data?.cached);
+        setFxRateSource(source);
+        setFxWasCached(cached);
+        try {
+          if (providerTime && Number.isFinite(providerTime.getTime())) {
+            localStorage.setItem('finintel_fx_provider_time', providerTime.toISOString());
+          }
+          localStorage.setItem('finintel_fx_provider', source);
+          localStorage.setItem('finintel_fx_cached', String(cached));
+        } catch (e) {}
         if (force) {
           showToast(`Forex synchronized: 1 USD = ₹${(rateVal || fxRate).toFixed(2)}`);
         }
@@ -1381,14 +1398,18 @@ function App() {
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                    {/* Live FX Rate Pill with Auto-Refresh & Cache Invalidation */}
+                    {/* FX quote shows the provider and its own quote time. */}
                     <div 
                       className="fx-rate-pill" 
-                      title={`Live USD/INR Exchange Rate · Auto-refreshes every 60s · Last updated: ${fxLastUpdated ? fxLastUpdated.toLocaleTimeString() : 'Live'}`}
+                      title={`USD/INR source: ${fxRateSource}. Provider quote time: ${fxLastUpdated ? fxLastUpdated.toLocaleString() : 'unavailable'}. ${fxWasCached ? 'Served from backend cache.' : 'Fetched from provider.'} Rates from different providers may vary.`}
                     >
                       <Globe size={12} color="var(--accent)" />
                       <span className="font-mono" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
                         1 USD = ₹{fxRate.toFixed(2)}
+                      </span>
+                      <span className="font-mono" style={{ fontSize: '0.58rem', color: 'var(--text-tertiary)' }}>
+                        {fxRateSource === 'ExchangeRate-API' ? 'ExchangeRate' : fxRateSource === 'Yahoo Finance' ? 'Yahoo' : fxRateSource === 'Open Exchange Rates' ? 'Open ER' : 'Fallback'}
+                        {' · '}{fxLastUpdated ? fxLastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}
                       </span>
                       <button
                         type="button"
