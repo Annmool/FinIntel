@@ -7,6 +7,7 @@ const Sentiment = require('sentiment');
 const cron = require('node-cron');
 const Groq = require("groq-sdk");
 const NodeCache = require('node-cache');
+const admin = require('firebase-admin');
 const YahooFinance = require('yahoo-finance2').default;
 const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 try { yahooFinance._setOpts({ validation: { logErrors: false } }); } catch (e) {}
@@ -21,8 +22,23 @@ const PaperPortfolio = require('./models/PaperPortfolio');
 // --- Initialization ---
 const app = express();
 const sentiment = new Sentiment();
-const myCache = new NodeCache({ stdTTL: 60 });
+const myCache = new NodeCache({ stdTTL: 60, checkperiod: 120, useClones: false });
+const inFlightRequests = new Map();
+axios.defaults.timeout = 10000;
 const groq = new Groq({ apiKey: process.env.GROQ_KEY });
+
+admin.initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'finintel-a64ec' });
+
+const requireAuth = async (req, res, next) => {
+    const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (!token) return res.status(401).json({ error: 'Authentication required.' });
+    try {
+        req.user = await admin.auth().verifyIdToken(token);
+        next();
+    } catch (error) {
+        return res.status(401).json({ error: 'Invalid or expired authentication token.' });
+    }
+};
 
 const TWELVE_DATA_URL = "https://api.twelvedata.com";
 const FINNHUB_URL = "https://finnhub.io/api/v1";
@@ -142,6 +158,7 @@ function getCurrencySymbol(codeOrSym) {
 app.use(cors({
     origin: ["http://localhost:3000", "https://finintel.pages.dev"], 
     methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true
 }));
 app.use(express.json());
@@ -152,21 +169,34 @@ mongoose.connect(process.env.MONGO_URI)
     .catch(err => console.log("❌ MongoDB Connection Error:", err));
 
 // --- 2. Stability Helper (Cache Engine) ---
-const fetchWithCache = async (url, cacheKey, ttl = 60) => {
+// Share cache misses across concurrent requests so a popular key only hits a
+// provider once. Do not cache failures or empty responses.
+const getOrLoad = async (cacheKey, ttl, loader, { shouldCache = value => value != null } = {}) => {
     const cachedData = myCache.get(cacheKey);
-    if (cachedData) return cachedData;
+    if (cachedData !== undefined) return cachedData;
 
+    if (inFlightRequests.has(cacheKey)) return inFlightRequests.get(cacheKey);
+
+    const request = (async () => {
+        const value = await loader();
+        if (shouldCache(value)) myCache.set(cacheKey, value, ttl);
+        return value;
+    })();
+    inFlightRequests.set(cacheKey, request);
     try {
-        const response = await axios.get(url);
-        if (response.data.status === "error" || response.data.error) {
-            throw new Error("Rate Limit reached");
-        }
-        myCache.set(cacheKey, response.data, ttl);
-        return response.data;
-    } catch (error) {
-        throw error;
+        return await request;
+    } finally {
+        if (inFlightRequests.get(cacheKey) === request) inFlightRequests.delete(cacheKey);
     }
 };
+
+const fetchWithCache = (url, cacheKey, ttl = 60) => getOrLoad(cacheKey, ttl, async () => {
+    const response = await axios.get(url, { timeout: 10000 });
+    if (response.data?.status === "error" || response.data?.error) {
+        throw new Error(response.data?.message || "Market data provider returned an error");
+    }
+    return response.data;
+});
 
 const isValidCandleData = (d) => {
     return Boolean(
@@ -297,34 +327,28 @@ app.get('/api/stock/:symbol', async (req, res) => {
             myCache.del(cacheKey);
         }
 
-        let data;
-        if (preferYahoo) {
-            data = await fetchFromYahoo(rawSymbol);
-        } else {
-            try {
-                const url = `${TWELVE_DATA_URL}/time_series?symbol=${symbol}${exchangeParam}&interval=1day&apikey=${process.env.STOCK_API_KEY}`;
-                data = await fetchWithCache(url, `td_raw_${rawSymbol}`, 300);
-                if (!isValidCandleData(data)) {
-                    throw new Error("Twelve Data returned error or incomplete quotes");
+        const data = await getOrLoad(cacheKey, 300, async () => {
+            let result;
+            if (preferYahoo) {
+                result = await fetchFromYahoo(rawSymbol);
+            } else {
+                try {
+                    const url = `${TWELVE_DATA_URL}/time_series?symbol=${symbol}${exchangeParam}&interval=1day&apikey=${process.env.STOCK_API_KEY}`;
+                    result = await fetchWithCache(url, `td_raw_${rawSymbol}`, 300);
+                    if (!isValidCandleData(result)) throw new Error("Twelve Data returned incomplete quotes");
+                } catch (err) {
+                    console.log(`Twelve Data unavailable for ${symbol} (${err.message}). Falling back to Yahoo Finance.`);
+                    result = await fetchFromYahoo(symbol);
                 }
-                if (data && data.meta) data.meta.symbol = rawSymbol;
-            } catch (err) {
-                // Fallback to Yahoo Finance if Twelve Data hits rate limit or errors
-                console.log(`Twelve Data unavailable for ${symbol} (${err.message}). Falling back to Yahoo Finance.`);
-                data = await fetchFromYahoo(symbol); 
-                if (data && data.meta) data.meta.symbol = rawSymbol;
             }
-        }
+            if (!isValidCandleData(result)) throw new Error("No valid candle data returned");
+            if (result.meta) {
+                result.meta.symbol = rawSymbol;
+                if (!result.meta.currency) result.meta.currency = inferCurrencyFromSymbol(rawSymbol);
+            }
+            return result;
+        }, { shouldCache: isValidCandleData });
 
-        if (isValidCandleData(data)) {
-            if (data && data.meta) {
-                data.meta.symbol = rawSymbol;
-                if (!data.meta.currency) {
-                    data.meta.currency = inferCurrencyFromSymbol(rawSymbol);
-                }
-            }
-            myCache.set(cacheKey, data, 300);
-        }
         res.json(data);
     } catch (e) {
         console.error("Stock Fetch Error:", e.message);
@@ -339,10 +363,9 @@ app.get('/api/search/:query', async (req, res) => {
     
     const cleanQuery = query.trim();
     const cacheKey = `search_${cleanQuery.toLowerCase()}`;
-    const cached = myCache.get(cacheKey);
-    if (cached) return res.json(cached);
 
     try {
+        const formatted = await getOrLoad(cacheKey, 3600, async () => {
         let formatted = [];
         try {
             const ySearch = await yahooFinance.search(cleanQuery, {}, { validateResult: false });
@@ -383,9 +406,8 @@ app.get('/api/search/:query', async (req, res) => {
             }
         }
         
-        if (formatted.length > 0) {
-            myCache.set(cacheKey, formatted, 3600);
-        }
+        return formatted;
+        }, { shouldCache: value => Array.isArray(value) && value.length > 0 });
         return res.json(formatted);
     } catch (error) {
         console.error("Search Error:", error.message);
@@ -396,9 +418,8 @@ app.get('/api/search/:query', async (req, res) => {
 // High-Frequency Ticker Tape (Yahoo Finance with Finnhub Fallback)
 app.get('/api/ticker-tape', async (req, res) => {
     const cacheKey = "global_ticker_tape";
-    const cached = myCache.get(cacheKey);
-    if (cached) return res.json(cached);
     try {
+        const data = await getOrLoad(cacheKey, 60, async () => {
         const symbols = ["AAPL", "TSLA", "RELIANCE.NS", "TCS.NS", "MSFT", "AMZN", "GOOGL"];
         let data = [];
         try {
@@ -430,9 +451,8 @@ app.get('/api/ticker-tape', async (req, res) => {
                 .filter(item => item !== null && item.close !== 0);
         }
 
-        if (data.length > 0) {
-            myCache.set(cacheKey, data, 60);
-        }
+        return data;
+        }, { shouldCache: value => Array.isArray(value) && value.length > 0 });
         res.json(data);
     } catch (e) {
         console.error("Ticker Tape Error:", e.message);
@@ -444,8 +464,7 @@ app.get('/api/ticker-tape', async (req, res) => {
 app.get('/api/market-briefing', async (req, res) => {
     try {
         const cacheKey = "market_briefing_cnbc";
-        const cached = myCache.get(cacheKey);
-        if (cached) return res.json(cached);
+        const finalData = await getOrLoad(cacheKey, 300, async () => {
 
         const url = `https://finnhub.io/api/v1/news?category=general&token=${process.env.FINNHUB_API_KEY}`;
         const responseData = await fetchWithCache(url, "market_briefing_raw", 300); // 5 minute cache
@@ -482,12 +501,11 @@ app.get('/api/market-briefing', async (req, res) => {
             console.error("Groq Briefing Error:", err.message);
         }
 
-        const finalData = {
+        return {
             news: newsList.slice(0, 10),
             predictions: aiPredictions
         };
-
-        myCache.set(cacheKey, finalData, 300);
+        }, { shouldCache: value => Boolean(value?.news?.length) });
         res.json(finalData);
     } catch (e) { 
         res.json({ news: [], predictions: { higher: [], lower: [] } }); 
@@ -497,16 +515,19 @@ app.get('/api/market-briefing', async (req, res) => {
 // News + Sentiment
 app.get('/api/news/:symbol', async (req, res) => {
     try {
-        let cleanSymbol = req.params.symbol.split(':')[0].replace('.NS', '').replace('.BO', '');
-        const ySearch = await yahooFinance.search(cleanSymbol, {}, { validateResult: false });
-        const articles = (ySearch.news || []).slice(0, 5).map(item => ({
-            title: item.title,
-            url: item.link,
-            urlToImage: item.thumbnail?.resolutions?.[0]?.url || null,
-            source: { name: item.publisher },
-            publishedAt: item.providerPublishTime,
-            sentimentScore: sentiment.analyze(item.title || "").score
-        }));
+        const rawSymbol = req.params.symbol.trim().toUpperCase();
+        const cleanSymbol = rawSymbol.split(':')[0].replace('.NS', '').replace('.BO', '');
+        const articles = await getOrLoad(`news_${rawSymbol}`, 300, async () => {
+            const ySearch = await yahooFinance.search(cleanSymbol, {}, { validateResult: false });
+            return (ySearch.news || []).slice(0, 5).map(item => ({
+                title: item.title,
+                url: item.link,
+                urlToImage: item.thumbnail?.resolutions?.[0]?.url || null,
+                source: { name: item.publisher },
+                publishedAt: item.providerPublishTime,
+                sentimentScore: sentiment.analyze(item.title || "").score
+            }));
+        }, { shouldCache: value => Array.isArray(value) && value.length > 0 });
         res.json(articles);
     } catch (e) { res.json([]); }
 });
@@ -518,10 +539,9 @@ app.get('/api/fundamentals/:symbol', async (req, res) => {
     const isUSStock = !rawSymbol.includes('.') && !rawSymbol.includes(':');
     
     const cacheKey = `fund_${rawSymbol}`;
-    const cached = myCache.get(cacheKey);
-    if (cached) return res.json(cached);
 
     try {
+        const data = await getOrLoad(cacheKey, 3600, async () => {
         let data = {};
         if (isUSStock && process.env.FINNHUB_API_KEY) {
             try {
@@ -559,7 +579,8 @@ app.get('/api/fundamentals/:symbol', async (req, res) => {
                 }
             };
         }
-        myCache.set(cacheKey, data, 3600);
+        return data;
+        }, { shouldCache: value => Boolean(value?.profile || value?.metrics) });
         res.json(data);
     } catch (e) { 
         console.error("Fundamentals Error:", e.message);
@@ -568,66 +589,69 @@ app.get('/api/fundamentals/:symbol', async (req, res) => {
 });
 
 // --- 5. User-Specific Logic (Watchlist & Portfolio) ---
+app.use('/api/watchlist', requireAuth);
+app.use('/api/portfolio', requireAuth);
+app.use('/api/paper-portfolio', requireAuth);
+app.use('/api/virtual-account', requireAuth);
+app.use('/api/alerts', requireAuth);
+
 app.get('/api/watchlist/:userId', async (req, res) => {
-    if (!req.params.userId) return res.json([]);
-    const list = await Watchlist.find({ userId: req.params.userId });
+    if (req.params.userId !== req.user.uid) return res.status(403).json({ error: 'Forbidden.' });
+    const list = await Watchlist.find({ userId: req.user.uid });
     res.json(list);
 });
 
 app.post('/api/watchlist', async (req, res) => {
-    const { symbol, userId } = req.body;
-    if (!symbol || typeof symbol !== 'string' || !userId) {
+    const { symbol } = req.body;
+    if (!symbol || typeof symbol !== 'string') {
         return res.status(400).json({ error: "Invalid symbol or userId" });
     }
     const cleanSym = symbol.trim().toUpperCase();
-    const exists = await Watchlist.findOne({ symbol: cleanSym, userId });
+    const exists = await Watchlist.findOne({ symbol: cleanSym, userId: req.user.uid });
     if (exists) return res.status(400).send("Exists");
-    const newItem = new Watchlist({ symbol: cleanSym, userId });
+    const newItem = new Watchlist({ symbol: cleanSym, userId: req.user.uid });
     await newItem.save();
     res.json(newItem);
 });
 
 app.delete('/api/watchlist/:userId/:symbol', async (req, res) => {
-    if (!req.params.symbol || !req.params.userId) return res.send("Deleted");
-    await Watchlist.findOneAndDelete({ symbol: req.params.symbol.trim().toUpperCase(), userId: req.params.userId });
+    if (req.params.userId !== req.user.uid) return res.status(403).json({ error: 'Forbidden.' });
+    if (!req.params.symbol) return res.send("Deleted");
+    await Watchlist.findOneAndDelete({ symbol: req.params.symbol.trim().toUpperCase(), userId: req.user.uid });
     res.send("Deleted");
 });
 
 app.get('/api/portfolio/:userId', async (req, res) => {
-    if (!req.params.userId) return res.json([]);
-    const holdings = await Portfolio.find({ userId: req.params.userId });
+    if (req.params.userId !== req.user.uid) return res.status(403).json({ error: 'Forbidden.' });
+    const holdings = await Portfolio.find({ userId: req.user.uid });
     res.json(holdings);
 });
 
 app.post('/api/portfolio', async (req, res) => {
-    const { userId, symbol, qty, price } = req.body;
+    const { symbol, qty, price } = req.body;
     const parsedQty = parseFloat(qty);
     const parsedPrice = parseFloat(price);
-    if (!userId || !symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+    if (!symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
         return res.status(400).json({ error: "Invalid portfolio parameters. Quantity and price must be positive numbers." });
     }
-    const newHolding = new Portfolio({ userId, symbol: symbol.trim().toUpperCase(), qty: parsedQty, price: parsedPrice });
+    const newHolding = new Portfolio({ userId: req.user.uid, symbol: symbol.trim().toUpperCase(), qty: parsedQty, price: parsedPrice });
     await newHolding.save();
     res.json(newHolding);
 });
 
 app.delete('/api/portfolio/:id', async (req, res) => {
-    await Portfolio.findByIdAndDelete(req.params.id);
+    const deleted = await Portfolio.findOneAndDelete({ _id: req.params.id, userId: req.user.uid });
+    if (!deleted) return res.status(404).json({ error: 'Holding not found.' });
     res.send("Deleted");
 });
 
 // --- Forex FX Rate Engine (ExchangeRate-API Primary with Yahoo & OpenER Fallbacks) ---
-async function getGlobalFxRates(forceRefresh = false) {
-    if (!forceRefresh) {
-        const cached = myCache.get('GLOBAL_FX_RATES');
-        if (cached) return cached;
-    }
-
+async function loadGlobalFxRates() {
     const rates = { ...DEFAULT_FX_RATES };
     let fetched = false;
 
     // 1. Primary: Dedicated ExchangeRate-API v6 Live Feed (using user API Key)
-    const apiKey = process.env.EXCHANGERATE_API_KEY || 'a0cec5db56066dffe94f9134';
+    const apiKey = process.env.EXCHANGERATE_API_KEY;
     if (apiKey) {
         try {
             const fxRes = await axios.get(`https://v6.exchangerate-api.com/v6/${apiKey}/latest/USD`, { timeout: 4000 });
@@ -688,8 +712,12 @@ async function getGlobalFxRates(forceRefresh = false) {
         }
     }
 
-    myCache.set('GLOBAL_FX_RATES', rates, 60); // Cache for 60 seconds (ultra-fresh live rate)
     return rates;
+}
+
+async function getGlobalFxRates(forceRefresh = false) {
+    if (forceRefresh) myCache.del('GLOBAL_FX_RATES');
+    return getOrLoad('GLOBAL_FX_RATES', 60, loadGlobalFxRates);
 }
 
 async function getUsdInrRate() {
@@ -742,15 +770,17 @@ app.post('/api/forex/refresh', async (req, res) => {
 
 // Paper Trading: Get Holdings
 app.get('/api/paper-portfolio/:userId', async (req, res) => {
-    const holdings = await PaperPortfolio.find({ userId: req.params.userId });
+    if (req.params.userId !== req.user.uid) return res.status(403).json({ error: 'Forbidden.' });
+    const holdings = await PaperPortfolio.find({ userId: req.user.uid });
     res.json(holdings);
 });
 
 // Paper Trading: Get Balance
 app.get('/api/virtual-account/:userId', async (req, res) => {
-    let account = await VirtualAccount.findOne({ userId: req.params.userId });
+    if (req.params.userId !== req.user.uid) return res.status(403).json({ error: 'Forbidden.' });
+    let account = await VirtualAccount.findOne({ userId: req.user.uid });
     if (!account) {
-        account = new VirtualAccount({ userId: req.params.userId, balance: 100000 });
+        account = new VirtualAccount({ userId: req.user.uid, balance: 100000 });
         await account.save();
     }
     res.json(account);
@@ -758,11 +788,11 @@ app.get('/api/virtual-account/:userId', async (req, res) => {
 
 // Paper Trading: Buy (Handles multi-currency normalized against USD balance)
 app.post('/api/paper-portfolio/buy', async (req, res) => {
-    const { userId, symbol, qty, price, currency } = req.body;
+    const { symbol, qty, price, currency } = req.body;
     const parsedQty = parseFloat(qty);
     const parsedPrice = parseFloat(price);
 
-    if (!userId || !symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+    if (!symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
         return res.status(400).json({ error: "Invalid order parameters. Quantity and price must be positive numbers." });
     }
 
@@ -775,30 +805,40 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
     const totalCostUsd = stockCur === 'USD' ? totalCostNative : Number((totalCostNative / fxToUsd).toFixed(2));
     const curSymbol = getCurrencySymbol(stockCur);
 
-    let account = await VirtualAccount.findOne({ userId });
-    if (!account) {
-        account = new VirtualAccount({ userId, balance: 100000 });
-        await account.save();
-    }
+    const session = await mongoose.startSession();
+    let account;
+    let holding;
+    try {
+        await session.withTransaction(async () => {
+            account = await VirtualAccount.findOneAndUpdate(
+                { userId: req.user.uid },
+                { $setOnInsert: { balance: 100000 } },
+                { new: true, upsert: true, session }
+            );
+            if (account.balance < totalCostUsd) {
+                const error = new Error(`Insufficient virtual funds. Cost: $${totalCostUsd.toFixed(2)} USD (${curSymbol}${totalCostNative.toLocaleString()} ${stockCur}), Available: $${account.balance.toFixed(2)}`);
+                error.status = 400;
+                throw error;
+            }
+            account.balance = Number((account.balance - totalCostUsd).toFixed(2));
+            await account.save({ session });
 
-    if (account.balance < totalCostUsd) {
-        return res.status(400).json({ 
-            error: `Insufficient virtual funds. Cost: $${totalCostUsd.toFixed(2)} USD (${curSymbol}${totalCostNative.toLocaleString()} ${stockCur}), Available: $${account.balance.toFixed(2)}` 
+            holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol }).session(session);
+            if (holding) {
+                const oldTotal = holding.qty * holding.price;
+                holding.qty += parsedQty;
+                holding.price = (oldTotal + totalCostNative) / holding.qty;
+                await holding.save({ session });
+            } else {
+                holding = new PaperPortfolio({ userId: req.user.uid, symbol: cleanSymbol, qty: parsedQty, price: parsedPrice });
+                await holding.save({ session });
+            }
         });
-    }
-
-    account.balance = Number((account.balance - totalCostUsd).toFixed(2));
-    await account.save();
-
-    let holding = await PaperPortfolio.findOne({ userId, symbol: cleanSymbol });
-    if (holding) {
-        const oldTotal = holding.qty * holding.price;
-        holding.qty += parsedQty;
-        holding.price = (oldTotal + totalCostNative) / holding.qty;
-        await holding.save();
-    } else {
-        holding = new PaperPortfolio({ userId, symbol: cleanSymbol, qty: parsedQty, price: parsedPrice });
-        await holding.save();
+    } catch (error) {
+        if (error.status === 400) return res.status(400).json({ error: error.message });
+        throw error;
+    } finally {
+        await session.endSession();
     }
     
     res.json({ holding, balance: account.balance, fxRates, rate: fxRates.INR || DEFAULT_FX_RATES.INR });
@@ -806,39 +846,54 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
 
 // Paper Trading: Sell (Handles multi-currency normalized against USD balance)
 app.post('/api/paper-portfolio/sell', async (req, res) => {
-    const { userId, symbol, qty, price, currency } = req.body;
+    const { symbol, qty, price, currency } = req.body;
     const parsedQty = parseFloat(qty);
     const parsedPrice = parseFloat(price);
 
-    if (!userId || !symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+    if (!symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
         return res.status(400).json({ error: "Invalid order parameters. Quantity and price must be positive numbers." });
     }
 
     const cleanSymbol = symbol.trim().toUpperCase();
-    let holding = await PaperPortfolio.findOne({ userId, symbol: cleanSymbol });
-    if (!holding || holding.qty < parsedQty) {
-        return res.status(400).json({ error: "Not enough shares to sell" });
-    }
-
     const stockCur = currency ? currency.toUpperCase() : inferCurrencyFromSymbol(cleanSymbol);
     const fxRates = await getGlobalFxRates();
     const fxToUsd = fxRates[stockCur] || 1.0;
     const totalRevenueNative = Number((parsedQty * parsedPrice).toFixed(2));
     const totalRevenueUsd = stockCur === 'USD' ? totalRevenueNative : Number((totalRevenueNative / fxToUsd).toFixed(2));
 
-    let account = await VirtualAccount.findOne({ userId });
-    if (!account) {
-        account = new VirtualAccount({ userId, balance: 100000 });
-    }
-    account.balance = Number((account.balance + totalRevenueUsd).toFixed(2));
-    await account.save();
+    const session = await mongoose.startSession();
+    let holding;
+    let account;
+    try {
+        await session.withTransaction(async () => {
+            holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol }).session(session);
+            if (!holding || holding.qty < parsedQty) {
+                const error = new Error('Not enough shares to sell');
+                error.status = 400;
+                throw error;
+            }
 
-    holding.qty = Number((holding.qty - parsedQty).toFixed(4));
-    if (holding.qty <= 0.0001) {
-        await PaperPortfolio.findByIdAndDelete(holding._id);
-        holding = null;
-    } else {
-        await holding.save();
+            account = await VirtualAccount.findOneAndUpdate(
+                { userId: req.user.uid },
+                { $setOnInsert: { balance: 100000 } },
+                { new: true, upsert: true, session }
+            );
+            account.balance = Number((account.balance + totalRevenueUsd).toFixed(2));
+            await account.save({ session });
+
+            holding.qty = Number((holding.qty - parsedQty).toFixed(4));
+            if (holding.qty <= 0.0001) {
+                await PaperPortfolio.deleteOne({ _id: holding._id, userId: req.user.uid }, { session });
+                holding = null;
+            } else {
+                await holding.save({ session });
+            }
+        });
+    } catch (error) {
+        if (error.status === 400) return res.status(400).json({ error: error.message });
+        throw error;
+    } finally {
+        await session.endSession();
     }
 
     res.json({ holding, balance: account.balance, fxRates, rate: fxRates.INR || DEFAULT_FX_RATES.INR });
@@ -896,8 +951,7 @@ app.get('/api/screener/:type', async (req, res) => {
         }
 
         const cacheKey = `screener_${type}`;
-        const cached = myCache.get(cacheKey);
-        if (cached && cached.length > 0) return res.json(cached);
+        const quotes = await getOrLoad(cacheKey, 120, async () => {
 
         let quotes = [];
 
@@ -954,9 +1008,8 @@ app.get('/api/screener/:type', async (req, res) => {
             }
         }
 
-        if (quotes.length > 0) {
-            myCache.set(cacheKey, quotes, 120);
-        }
+        return quotes;
+        }, { shouldCache: value => Array.isArray(value) && value.length > 0 });
         res.json(quotes);
     } catch (e) {
         console.error(`Screener provider error (${req.params.type}):`, e.message);
@@ -965,27 +1018,25 @@ app.get('/api/screener/:type', async (req, res) => {
 });
 
 app.get('/api/alerts/:userId', async (req, res) => {
-    if (!req.params.userId) return res.json([]);
-    const alerts = await Alert.find({ userId: req.params.userId });
+    if (req.params.userId !== req.user.uid) return res.status(403).json({ error: 'Forbidden.' });
+    const alerts = await Alert.find({ userId: req.user.uid });
     res.json(alerts);
 });
 
 app.post('/api/alerts', async (req, res) => {
-    const { userId, symbol, targetPrice, condition } = req.body;
+    const { symbol, targetPrice, condition } = req.body;
     const parsedTarget = parseFloat(targetPrice);
-    if (!userId || !symbol || typeof symbol !== 'string' || !Number.isFinite(parsedTarget) || parsedTarget <= 0 || !['ABOVE', 'BELOW'].includes(condition)) {
+    if (!symbol || typeof symbol !== 'string' || !Number.isFinite(parsedTarget) || parsedTarget <= 0 || !['ABOVE', 'BELOW'].includes(condition)) {
         return res.status(400).json({ error: "Invalid alert parameters. Provide a valid symbol, target price, and condition (ABOVE/BELOW)." });
     }
     const cleanSym = symbol.trim().toUpperCase();
-    const newAlert = new Alert({ userId, symbol: cleanSym, targetPrice: parsedTarget, condition, triggered: false });
+    const newAlert = new Alert({ userId: req.user.uid, symbol: cleanSym, targetPrice: parsedTarget, condition, triggered: false });
     await newAlert.save();
     res.json(newAlert);
 });
 
 app.delete('/api/alerts/:id', async (req, res) => {
-    if (req.params.id) {
-        await Alert.findByIdAndDelete(req.params.id);
-    }
+    if (req.params.id) await Alert.findOneAndDelete({ _id: req.params.id, userId: req.user.uid });
     res.send("Deleted");
 });
 
