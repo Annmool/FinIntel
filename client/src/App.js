@@ -467,8 +467,8 @@ function App() {
       const priceUsd = convertPrice(priceNative, stockCur, 'USD', fxRates);
       const fxRateDisplay = fxRates[stockCur] || 1;
       const promptText = stockCur !== 'USD'
-        ? `Paper Order: Buy ${data?.meta?.symbol}\nMarket Price: ${stockCurSym}${formatPrice(priceNative, stockCur)} ${stockCur} (~$${priceUsd.toFixed(2)} USD at ${stockCurSym}${formatPrice(fxRateDisplay, stockCur)}/$)\nAvailable Cash: $${virtualBalance.toFixed(2)} USD\nShares to BUY:`
-        : `Paper Order: Buy ${data?.meta?.symbol}\nMarket Price: $${priceNative.toFixed(2)}\nAvailable Cash: $${virtualBalance.toFixed(2)} USD\nShares to BUY:`;
+        ? `Paper Order: Buy ${data?.meta?.symbol}\nLast chart close (indicative): ${stockCurSym}${formatPrice(priceNative, stockCur)} ${stockCur} (~$${priceUsd.toFixed(2)} USD at ${stockCurSym}${formatPrice(fxRateDisplay, stockCur)}/$)\nFinal fill uses the latest server quote.\nAvailable Cash: $${virtualBalance.toFixed(2)} USD\nShares to BUY:`
+        : `Paper Order: Buy ${data?.meta?.symbol}\nLast chart close (indicative): $${priceNative.toFixed(2)}\nFinal fill uses the latest server quote.\nAvailable Cash: $${virtualBalance.toFixed(2)} USD\nShares to BUY:`;
       const qtyStr = prompt(promptText);
       if (qtyStr && !isNaN(qtyStr) && parseFloat(qtyStr) > 0) {
         const qty = parseFloat(qtyStr);
@@ -476,13 +476,11 @@ function App() {
           const res = await axios.post(`${API_URL}/api/paper-portfolio/buy`, {
             userId: currUser.uid,
             symbol: data?.meta?.symbol,
-            qty,
-            price: priceNative,
-            currency: stockCur
+            qty
           });
           setVirtualBalance(res.data.balance);
           fetchPaperPortfolio(currUser.uid);
-          showToast(`Executed: Bought ${qty} paper shares of ${data?.meta?.symbol}`);
+          showToast(`Bought ${qty} ${data?.meta?.symbol} @ ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource})`);
         } catch (err) {
           showToast(err.response?.data?.error || 'Order rejected', 'error');
         }
@@ -493,8 +491,8 @@ function App() {
       const priceNative = parseFloat(data?.values[0].close);
       const priceUsd = convertPrice(priceNative, stockCur, 'USD', fxRates);
       const promptText = stockCur !== 'USD'
-        ? `Paper Order: Sell ${data?.meta?.symbol}\nMarket Price: ${stockCurSym}${formatPrice(priceNative, stockCur)} ${stockCur} (~$${priceUsd.toFixed(2)} USD)\nEnter shares to SELL:`
-        : `Paper Order: Sell ${data?.meta?.symbol}\nMarket Price: $${priceNative.toFixed(2)}\nEnter shares to SELL:`;
+        ? `Paper Order: Sell ${data?.meta?.symbol}\nLast chart close (indicative): ${stockCurSym}${formatPrice(priceNative, stockCur)} ${stockCur} (~$${priceUsd.toFixed(2)} USD)\nFinal fill uses the latest server quote.\nEnter shares to SELL:`
+        : `Paper Order: Sell ${data?.meta?.symbol}\nLast chart close (indicative): $${priceNative.toFixed(2)}\nFinal fill uses the latest server quote.\nEnter shares to SELL:`;
       const qtyStr = prompt(promptText);
       if (qtyStr && !isNaN(qtyStr) && parseFloat(qtyStr) > 0) {
         const qty = parseFloat(qtyStr);
@@ -502,13 +500,11 @@ function App() {
           const res = await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
             userId: currUser.uid,
             symbol: data?.meta?.symbol,
-            qty,
-            price: data?.values[0].close,
-            currency: stockCur
+            qty
           });
           setVirtualBalance(res.data.balance);
           fetchPaperPortfolio(currUser.uid);
-          showToast(`Executed: Sold ${qty} paper shares of ${data?.meta?.symbol}`);
+          showToast(`Sold ${qty} ${data?.meta?.symbol} @ ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource})`);
         } catch (err) {
           showToast(err.response?.data?.error || 'Order rejected', 'error');
         }
@@ -1727,18 +1723,14 @@ function App() {
                                 <button
                                 className="btn btn-danger btn-sm"
                                 onClick={async () => {
-                                  const closePrice = portfolioPrices[p.symbol] || parseFloat(p.price);
-                                  const pCur = p.currency || inferCurrencyFromSymbol(p.symbol);
-                                  await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
+                                  const res = await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
                                     userId: user.uid,
                                     symbol: p.symbol,
-                                    qty: p.qty,
-                                    price: closePrice,
-                                    currency: pCur
+                                    qty: p.qty
                                   });
                                   fetchPaperPortfolio(user.uid);
                                   fetchVirtualBalance(user.uid);
-                                  showToast(`Closed ${p.symbol} position at ${getCurrencySymbol(pCur)}${formatPrice(closePrice, pCur)}`);
+                                  showToast(`Closed ${p.symbol} at ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource})`);
                                 }}
                               >
                                 Close

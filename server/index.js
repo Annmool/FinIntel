@@ -8,6 +8,9 @@ const cron = require('node-cron');
 const Groq = require("groq-sdk");
 const NodeCache = require('node-cache');
 const admin = require('firebase-admin');
+const rateLimit = require('express-rate-limit');
+const { createRequireAuth } = require('./middleware/requireAuth');
+const { validatePaperOrder, calculatePaperOrderTotals, calculateWeightedAveragePrice } = require('./services/paperTrading');
 const YahooFinance = require('yahoo-finance2').default;
 const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 try { yahooFinance._setOpts({ validation: { logErrors: false } }); } catch (e) {}
@@ -29,15 +32,38 @@ const groq = new Groq({ apiKey: process.env.GROQ_KEY });
 
 admin.initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'finintel-a64ec' });
 
-const requireAuth = async (req, res, next) => {
-    const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
-    if (!token) return res.status(401).json({ error: 'Authentication required.' });
-    try {
-        req.user = await admin.auth().verifyIdToken(token);
-        next();
-    } catch (error) {
-        return res.status(401).json({ error: 'Invalid or expired authentication token.' });
+const requireAuth = createRequireAuth(token => admin.auth().verifyIdToken(token));
+let activeQuantJobs = 0;
+
+const aiAnalysisLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 12,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    message: { error: 'AI analysis limit reached. Try again in a minute.' }
+});
+const quantSimulationLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 4,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    message: { error: 'Simulation limit reached. Try again in a minute.' }
+});
+const quantConcurrencyLimit = (req, res, next) => {
+    if (activeQuantJobs >= 2) {
+        res.set('Retry-After', '10');
+        return res.status(503).json({ error: 'Quant engine is busy. Retry shortly.' });
     }
+    activeQuantJobs += 1;
+    let released = false;
+    const releaseSlot = () => {
+        if (released) return;
+        released = true;
+        activeQuantJobs = Math.max(0, activeQuantJobs - 1);
+    };
+    res.once('finish', releaseSlot);
+    res.once('close', releaseSlot);
+    return next();
 };
 
 const TWELVE_DATA_URL = "https://api.twelvedata.com";
@@ -162,6 +188,13 @@ app.use(cors({
     credentials: true
 }));
 app.use(express.json());
+const configuredTrustProxyHops = Number(process.env.TRUST_PROXY_HOPS ?? 1);
+app.set(
+    'trust proxy',
+    Number.isInteger(configuredTrustProxyHops) && configuredTrustProxyHops >= 0
+        ? configuredTrustProxyHops
+        : 1
+);
 
 // --- 1. Database Connection ---
 mongoose.connect(process.env.MONGO_URI)
@@ -827,23 +860,56 @@ app.get('/api/virtual-account/:userId', async (req, res) => {
     res.json(account);
 });
 
+async function getPaperMarketQuote(symbol) {
+    return getOrLoad(`paper_quote_${symbol}`, 10, async () => {
+        const result = await yahooFinance.quote(symbol, {}, { validateResult: false });
+        const quote = Array.isArray(result) ? result[0] : result;
+        const price = Number(quote?.regularMarketPrice);
+        if (!Number.isFinite(price) || price <= 0) {
+            const error = new Error(`Could not get a valid market quote for ${symbol}. Try again later.`);
+            error.status = 503;
+            throw error;
+        }
+
+        const providerCurrency = String(quote.currency || inferCurrencyFromSymbol(symbol)).trim();
+        const isPenceQuote = providerCurrency === 'GBp' || providerCurrency.toUpperCase() === 'GBX';
+        const currency = isPenceQuote ? 'GBP' : providerCurrency.toUpperCase();
+        const normalizedPrice = isPenceQuote ? price / 100 : price;
+        return {
+            price: normalizedPrice,
+            currency,
+            source: 'Yahoo Finance',
+            sourceUpdatedAt: quote.regularMarketTime
+                ? new Date(quote.regularMarketTime * 1000).toISOString()
+                : null
+        };
+    }, { shouldCache: quote => Number.isFinite(quote?.price) && quote.price > 0 });
+}
+
 // Paper Trading: Buy (Handles multi-currency normalized against USD balance)
 app.post('/api/paper-portfolio/buy', async (req, res) => {
-    const { symbol, qty, price, currency } = req.body;
-    const parsedQty = parseFloat(qty);
-    const parsedPrice = parseFloat(price);
-
-    if (!symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
-        return res.status(400).json({ error: "Invalid order parameters. Quantity and price must be positive numbers." });
+    let order;
+    try {
+        order = validatePaperOrder(req.body.symbol, req.body.qty);
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
     }
-
-    const cleanSymbol = symbol.trim().toUpperCase();
-    const stockCur = currency ? currency.toUpperCase() : inferCurrencyFromSymbol(cleanSymbol);
+    const { symbol: cleanSymbol, quantity: parsedQty } = order;
+    let quote;
+    try {
+        quote = await getPaperMarketQuote(cleanSymbol);
+    } catch (error) {
+        return res.status(error.status || 503).json({ error: error.message });
+    }
     const fxRates = await getGlobalFxRates();
-    const fxToUsd = fxRates[stockCur] || 1.0;
-    const totalCostNative = Number((parsedQty * parsedPrice).toFixed(2));
+    let totals;
+    try {
+        totals = calculatePaperOrderTotals(parsedQty, quote.price, quote.currency, fxRates);
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
+    const { currency: stockCur, nativeAmount: totalCostNative, usdAmount: totalCostUsd } = totals;
     // Normalize into USD virtual account balance
-    const totalCostUsd = stockCur === 'USD' ? totalCostNative : Number((totalCostNative / fxToUsd).toFixed(2));
     const curSymbol = getCurrencySymbol(stockCur);
 
     const session = await mongoose.startSession();
@@ -866,12 +932,13 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
 
             holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol }).session(session);
             if (holding) {
-                const oldTotal = holding.qty * holding.price;
+                const weightedPrice = calculateWeightedAveragePrice(holding.qty, holding.price, parsedQty, quote.price);
                 holding.qty += parsedQty;
-                holding.price = (oldTotal + totalCostNative) / holding.qty;
+                holding.price = weightedPrice;
+                holding.currency = quote.currency;
                 await holding.save({ session });
             } else {
-                holding = new PaperPortfolio({ userId: req.user.uid, symbol: cleanSymbol, qty: parsedQty, price: parsedPrice });
+                holding = new PaperPortfolio({ userId: req.user.uid, symbol: cleanSymbol, currency: quote.currency, qty: parsedQty, price: quote.price });
                 await holding.save({ session });
             }
         });
@@ -882,25 +949,41 @@ app.post('/api/paper-portfolio/buy', async (req, res) => {
         await session.endSession();
     }
     
-    res.json({ holding, balance: account.balance, fxRates, rate: fxRates.INR || DEFAULT_FX_RATES.INR });
+    res.json({
+        holding,
+        balance: account.balance,
+        fxRates,
+        rate: fxRates.INR || DEFAULT_FX_RATES.INR,
+        executedPrice: quote.price,
+        currency: quote.currency,
+        quoteSource: quote.source,
+        quoteTimestamp: quote.sourceUpdatedAt
+    });
 });
 
 // Paper Trading: Sell (Handles multi-currency normalized against USD balance)
 app.post('/api/paper-portfolio/sell', async (req, res) => {
-    const { symbol, qty, price, currency } = req.body;
-    const parsedQty = parseFloat(qty);
-    const parsedPrice = parseFloat(price);
-
-    if (!symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
-        return res.status(400).json({ error: "Invalid order parameters. Quantity and price must be positive numbers." });
+    let order;
+    try {
+        order = validatePaperOrder(req.body.symbol, req.body.qty);
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
     }
-
-    const cleanSymbol = symbol.trim().toUpperCase();
-    const stockCur = currency ? currency.toUpperCase() : inferCurrencyFromSymbol(cleanSymbol);
+    const { symbol: cleanSymbol, quantity: parsedQty } = order;
+    let quote;
+    try {
+        quote = await getPaperMarketQuote(cleanSymbol);
+    } catch (error) {
+        return res.status(error.status || 503).json({ error: error.message });
+    }
     const fxRates = await getGlobalFxRates();
-    const fxToUsd = fxRates[stockCur] || 1.0;
-    const totalRevenueNative = Number((parsedQty * parsedPrice).toFixed(2));
-    const totalRevenueUsd = stockCur === 'USD' ? totalRevenueNative : Number((totalRevenueNative / fxToUsd).toFixed(2));
+    let totals;
+    try {
+        totals = calculatePaperOrderTotals(parsedQty, quote.price, quote.currency, fxRates);
+    } catch (error) {
+        return res.status(400).json({ error: error.message });
+    }
+    const { currency: stockCur, nativeAmount: totalRevenueNative, usdAmount: totalRevenueUsd } = totals;
 
     const session = await mongoose.startSession();
     let holding;
@@ -937,7 +1020,16 @@ app.post('/api/paper-portfolio/sell', async (req, res) => {
         await session.endSession();
     }
 
-    res.json({ holding, balance: account.balance, fxRates, rate: fxRates.INR || DEFAULT_FX_RATES.INR });
+    res.json({
+        holding,
+        balance: account.balance,
+        fxRates,
+        rate: fxRates.INR || DEFAULT_FX_RATES.INR,
+        executedPrice: quote.price,
+        currency: quote.currency,
+        quoteSource: quote.source,
+        quoteTimestamp: quote.sourceUpdatedAt
+    });
 });
 
 // Curated Multi-Market Screener Universe (US Tech, Mega-Caps, Indian NSE Bluechips)
@@ -1082,7 +1174,7 @@ app.delete('/api/alerts/:id', async (req, res) => {
 });
 
 // --- 6. AI Analyst ---
-app.post('/api/ai-analysis', async (req, res) => {
+app.post('/api/ai-analysis', aiAnalysisLimiter, async (req, res) => {
     try {
         const { symbol, price, rsi, sentiment, news, currency } = req.body;
         const curCode = currency ? currency.toUpperCase() : inferCurrencyFromSymbol(symbol);
@@ -1116,7 +1208,7 @@ app.get('/api/quant/presets', (req, res) => {
     res.json(PRESETS);
 });
 
-app.post('/api/quant/simulate', async (req, res) => {
+app.post('/api/quant/simulate', quantSimulationLimiter, quantConcurrencyLimit, async (req, res) => {
     try {
         const {
             symbols = ['AAPL', 'MSFT', 'NVDA'],

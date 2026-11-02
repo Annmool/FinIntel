@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test",
     "build": "g++ -O3 -fopenmp -std=c++20 quant_core/quant_engine.cpp -o quant_core/quant_engine",
     "start": "node index.js",
     "dev": "nodemon index.js"
@@ -21,6 +21,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.2",
     "firebase-admin": "^13.5.0",
     "groq-sdk": "^1.1.2",
     "mongoose": "^9.4.1",
