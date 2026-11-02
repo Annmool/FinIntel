@@ -29,5 +29,9 @@
     "nodemon": "^3.1.14",
     "sentiment": "^5.0.2",
     "yahoo-finance2": "^3.14.0"
+  },
+  "overrides": {
+    "minimatch": "11.0.1",
+    "uuid": "11.1.1"
   }
 }
