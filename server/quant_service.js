@@ -1,4 +1,4 @@
-const { spawn, execSync } = require('child_process');
+const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -17,25 +17,49 @@ if (isWindows) {
   }
 }
 
-// Auto-compile helper if binary is missing (e.g. on fresh Render Linux deploy)
+let binaryBuildPromise;
+
+// Compile asynchronously on the first simulation when the deployment did not
+// build the native binary. Concurrent first requests share the same build.
 function ensureBinaryExists() {
-  if (fs.existsSync(QUANT_BINARY)) return true;
-  console.log(`[QuantCore] Native binary missing at ${QUANT_BINARY}. Attempting compilation with g++...`);
-  try {
-    const gppCmd = isWindows && fs.existsSync('C:\\msys64\\ucrt64\\bin\\g++.exe')
-      ? 'C:\\msys64\\ucrt64\\bin\\g++.exe'
-      : 'g++';
-    const compileCmd = `"${gppCmd}" -O3 -fopenmp -std=c++20 -ffast-math "${SOURCE_FILE}" -o "${QUANT_BINARY}"`;
-    execSync(compileCmd, { stdio: 'inherit', env: extendedEnv });
-    if (!isWindows) {
-      try { fs.chmodSync(QUANT_BINARY, 0o755); } catch (_) {}
-    }
-    console.log(`[QuantCore] Successfully compiled native binary: ${BINARY_NAME}`);
-    return true;
-  } catch (err) {
-    console.error(`[QuantCore] Auto-compilation failed: ${err.message}`);
-    return false;
-  }
+  if (fs.existsSync(QUANT_BINARY)) return Promise.resolve();
+  if (binaryBuildPromise) return binaryBuildPromise;
+
+  console.log(`[QuantCore] Native binary missing at ${QUANT_BINARY}. Compiling with g++...`);
+  const compiler = isWindows && fs.existsSync('C:\\msys64\\ucrt64\\bin\\g++.exe')
+    ? 'C:\\msys64\\ucrt64\\bin\\g++.exe'
+    : 'g++';
+  const args = ['-O3', '-fopenmp', '-std=c++20', '-ffast-math', SOURCE_FILE, '-o', QUANT_BINARY];
+
+  const build = new Promise((resolve, reject) => {
+    const child = spawn(compiler, args, { windowsHide: true, env: extendedEnv });
+    let stderr = '';
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error('C++ quant engine compilation timed out after 120 seconds.'));
+    }, 120000);
+
+    child.stderr.on('data', chunk => { stderr = `${stderr}${chunk}`.slice(-12000); });
+    child.once('error', error => {
+      clearTimeout(timeout);
+      reject(new Error(`Could not start C++ compiler: ${error.message}`));
+    });
+    child.once('close', code => {
+      clearTimeout(timeout);
+      if (code !== 0) return reject(new Error(`C++ quant engine compilation failed (${code}): ${stderr}`));
+      if (!isWindows) {
+        try { fs.chmodSync(QUANT_BINARY, 0o755); } catch (_) {}
+      }
+      console.log(`[QuantCore] Successfully compiled ${BINARY_NAME}`);
+      resolve();
+    });
+  });
+
+  binaryBuildPromise = build;
+  build.finally(() => {
+    if (binaryBuildPromise === build) binaryBuildPromise = undefined;
+  }).catch(() => {});
+  return build;
 }
 
 // Standard Institutional Portfolio Presets
@@ -77,10 +101,9 @@ const PRESETS = {
 /**
  * Executes the native C++ quantitative binary via child process streaming
  */
-function runCppQuantEngine(inputData) {
+async function runCppQuantEngine(inputData) {
+  await ensureBinaryExists();
   return new Promise((resolve, reject) => {
-    ensureBinaryExists();
-
     const child = spawn(QUANT_BINARY, [], {
       windowsHide: true,
       env: extendedEnv
@@ -88,20 +111,43 @@ function runCppQuantEngine(inputData) {
 
     let stdoutData = '';
     let stderrData = '';
+    let settled = false;
+    const timeout = setTimeout(() => {
+      child.kill();
+      if (!settled) {
+        settled = true;
+        reject(new Error('C++ quant simulation timed out after 120 seconds.'));
+      }
+    }, 120000);
+
+    const failForOutputLimit = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.kill();
+      reject(new Error('C++ quant engine exceeded its output limit.'));
+    };
 
     child.stdout.on('data', (chunk) => {
+      if (stdoutData.length + chunk.length > 20 * 1024 * 1024) return failForOutputLimit();
       stdoutData += chunk.toString();
     });
 
     child.stderr.on('data', (chunk) => {
-      stderrData += chunk.toString();
+      stderrData = `${stderrData}${chunk}`.slice(-12000);
     });
 
     child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       reject(new Error(`Failed to spawn C++ Quant Core: ${err.message}`));
     });
 
     child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       if (code !== 0) {
         return reject(new Error(`C++ Quant Core exited with code ${code}. Stderr: ${stderrData}`));
       }
@@ -120,7 +166,8 @@ function runCppQuantEngine(inputData) {
 }
 
 /**
- * Pure JavaScript equivalent of Monte Carlo simulation for 1-to-1 live performance benchmarking
+ * JavaScript fallback Monte Carlo simulation. Its timings are not directly
+ * comparable to the native engine because the implementations differ.
  */
 function runJsMonteCarloBenchmark(inputData) {
   const t0 = process.hrtime.bigint();
