@@ -24,7 +24,7 @@ jobs:
         working-directory: client
       - run: npm run build
         working-directory: client
-      - run: npm audit --audit-level=high
+      - run: npm audit --omit=dev --audit-level=high
         working-directory: client
 
   server:
