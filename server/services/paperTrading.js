@@ -54,4 +54,29 @@ function calculateWeightedAveragePrice(existingQuantity, existingPrice, addedQua
   return ((Number(existingQuantity) * Number(existingPrice)) + (Number(addedQuantity) * Number(addedPrice))) / totalQuantity;
 }
 
-module.exports = { validatePaperOrder, toShareUnits, calculatePaperOrderTotals, calculateWeightedAveragePrice };
+function normalizePaperQuote(requestedSymbol, quote, source) {
+  if (typeof quote?.symbol !== 'string' || quote.symbol.toUpperCase() !== requestedSymbol) return null;
+  const quotedInPence = quote.currency === 'GBp' || quote.currency === 'GBX';
+  const currency = quotedInPence ? 'GBP' : quote.currency;
+  const price = Number(quote.regularMarketPrice) / (quotedInPence ? 100 : 1);
+  const time = marketTimeMs(quote.regularMarketTime);
+  if (!Number.isFinite(price) || price <= 0 || typeof currency !== 'string' ||
+      !/^[A-Z]{3}$/.test(currency) || !isRecentMarketTime(time)) return null;
+
+  return { price, currency, source, sourceUpdatedAt: new Date(time).toISOString() };
+}
+
+function marketTimeMs(timestamp) {
+  if (timestamp instanceof Date) return timestamp.getTime();
+  return Number.isFinite(timestamp) ? timestamp * 1000 : NaN;
+}
+
+function isRecentMarketTime(time) {
+  const age = Date.now() - time;
+  return age >= -60000 && age <= 7 * 86400000;
+}
+
+module.exports = {
+  validatePaperOrder, toShareUnits, calculatePaperOrderTotals, calculateWeightedAveragePrice,
+  normalizePaperQuote, marketTimeMs, isRecentMarketTime
+};

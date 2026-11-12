@@ -10,7 +10,10 @@ const NodeCache = require('node-cache');
 const admin = require('firebase-admin');
 const rateLimit = require('express-rate-limit');
 const { createRequireAuth } = require('./middleware/requireAuth');
-const { validatePaperOrder, toShareUnits, calculatePaperOrderTotals, calculateWeightedAveragePrice } = require('./services/paperTrading');
+const {
+    validatePaperOrder, toShareUnits, calculatePaperOrderTotals, calculateWeightedAveragePrice,
+    normalizePaperQuote, marketTimeMs, isRecentMarketTime
+} = require('./services/paperTrading');
 const YahooFinance = require('yahoo-finance2').default;
 const yahooFinance = new YahooFinance({
     suppressNotices: ['yahooSurvey'],
@@ -865,35 +868,49 @@ function getOrCreateVirtualAccount(userId, session) {
     );
 }
 
-function marketTimeMs(timestamp) {
-    if (timestamp instanceof Date) return timestamp.getTime();
-    return Number.isFinite(timestamp) ? timestamp * 1000 : NaN;
-}
-
-function isRecentMarketTime(time) {
-    const age = Date.now() - time;
-    return age >= -60000 && age <= 7 * 86400000;
-}
-
 async function getPaperMarketQuote(symbol) {
     return getOrLoad(`paper_quote_${symbol}`, 10, async () => {
         try {
             const result = await yahooFinance.quote(symbol, {}, { validateResult: false });
-            const quote = Array.isArray(result) ? result[0] : result;
-            if (quote?.symbol?.toUpperCase() === symbol) {
-                const currency = quote.currency;
-                const quotedInPence = currency === 'GBp' || currency === 'GBX';
-                const price = Number(quote.regularMarketPrice) / (quotedInPence ? 100 : 1);
-                const time = marketTimeMs(quote.regularMarketTime);
-                // Last traded prices remain usable during weekends and exchange holidays.
-                if (Number.isFinite(price) && price > 0 && (quotedInPence || /^[A-Z]{3}$/.test(currency)) &&
-                    isRecentMarketTime(time)) {
-                    return { price, currency: quotedInPence ? 'GBP' : currency, source: 'Yahoo Finance', sourceUpdatedAt: new Date(time).toISOString() };
-                }
-            }
+            const quote = normalizePaperQuote(symbol, Array.isArray(result) ? result[0] : result, 'Yahoo Finance');
+            if (quote) return quote;
         } catch (error) {
-            console.warn(`Paper quote unavailable for ${symbol}: ${error.message}`);
+            console.warn(`Yahoo quote unavailable for ${symbol}: ${error.message}`);
         }
+
+        try {
+            const start = new Date(Date.now() - 7 * 86400000);
+            const chart = await yahooFinance.chart(symbol, { period1: start, interval: '1d' }, { validateResult: false });
+            const quote = normalizePaperQuote(symbol, chart?.meta, 'Yahoo Finance chart');
+            if (quote) return quote;
+        } catch (error) {
+            console.warn(`Yahoo chart quote unavailable for ${symbol}: ${error.message}`);
+        }
+
+        const exchange = symbol.endsWith('.NS') ? 'NSE' : symbol.endsWith('.BO') ? 'BSE' : undefined;
+        const ticker = exchange ? symbol.slice(0, -3) : symbol;
+        if (process.env.STOCK_API_KEY && /^[A-Z][A-Z0-9-]{0,23}$/.test(ticker)) {
+            try {
+                const { data } = await axios.get(`${TWELVE_DATA_URL}/quote`, {
+                    params: { symbol: ticker, exchange },
+                    headers: { Authorization: `apikey ${process.env.STOCK_API_KEY}` },
+                    timeout: 4000
+                });
+                const expectedCurrency = exchange ? 'INR' : 'USD';
+                if (data?.currency === expectedCurrency && (!exchange || data.exchange === exchange)) {
+                    const quote = normalizePaperQuote(ticker, {
+                        symbol: data.symbol,
+                        currency: data.currency,
+                        regularMarketPrice: data.close,
+                        regularMarketTime: data.timestamp
+                    }, 'Twelve Data');
+                    if (quote) return quote;
+                }
+            } catch (error) {
+                console.warn(`Twelve Data quote unavailable for ${symbol}: ${error.message}`);
+            }
+        }
+
         throw Object.assign(new Error(`No recent verified market quote for ${symbol}. Try again later.`), { status: 503 });
     });
 }

@@ -4,7 +4,8 @@ const {
   validatePaperOrder,
   toShareUnits,
   calculatePaperOrderTotals,
-  calculateWeightedAveragePrice
+  calculateWeightedAveragePrice,
+  normalizePaperQuote
 } = require('../services/paperTrading');
 
 test('normalizes valid symbols and rejects malformed orders', () => {
@@ -36,4 +37,17 @@ test('converts a non-USD fill to the USD virtual balance', () => {
 
 test('computes weighted average cost when adding shares', () => {
   assert.equal(calculateWeightedAveragePrice(4, 100, 6, 120), 112);
+});
+
+test('accepts only recent provider quotes for the requested symbol', () => {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const quote = { symbol: 'MSFT', currency: 'USD', regularMarketPrice: '521.13', regularMarketTime: timestamp };
+  assert.deepEqual(normalizePaperQuote('MSFT', quote, 'Twelve Data'), {
+    price: 521.13, currency: 'USD', source: 'Twelve Data', sourceUpdatedAt: new Date(timestamp * 1000).toISOString()
+  });
+  assert.equal(normalizePaperQuote('AAPL', quote, 'Yahoo Finance'), null);
+  assert.equal(normalizePaperQuote('MSFT', { ...quote, regularMarketTime: timestamp - 8 * 86400 }, 'Yahoo Finance'), null);
+  assert.equal(normalizePaperQuote('MSFT', { ...quote, regularMarketTime: undefined }, 'Yahoo Finance'), null);
+  const pence = { ...quote, symbol: 'VOD.L', currency: 'GBp', regularMarketPrice: 85, regularMarketTime: new Date(timestamp * 1000) };
+  assert.equal(normalizePaperQuote('VOD.L', pence, 'Yahoo Finance chart').price, 0.85);
 });
