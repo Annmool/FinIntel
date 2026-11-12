@@ -22,14 +22,16 @@ let binaryBuildPromise;
 // Compile asynchronously on the first simulation when the deployment did not
 // build the native binary. Concurrent first requests share the same build.
 function ensureBinaryExists() {
-  if (fs.existsSync(QUANT_BINARY)) return Promise.resolve();
   if (binaryBuildPromise) return binaryBuildPromise;
+  const binary = fs.statSync(QUANT_BINARY, { throwIfNoEntry: false });
+  const source = fs.statSync(SOURCE_FILE, { throwIfNoEntry: false });
+  if (binary && (!source || binary.mtimeMs >= source.mtimeMs)) return Promise.resolve();
 
-  console.log(`[QuantCore] Native binary missing at ${QUANT_BINARY}. Compiling with g++...`);
+  console.log('[QuantCore] Building the native engine with g++...');
   const compiler = isWindows && fs.existsSync('C:\\msys64\\ucrt64\\bin\\g++.exe')
     ? 'C:\\msys64\\ucrt64\\bin\\g++.exe'
     : 'g++';
-  const args = ['-O3', '-fopenmp', '-std=c++20', '-ffast-math', SOURCE_FILE, '-o', QUANT_BINARY];
+  const args = ['-O3', '-fopenmp', '-std=c++20', SOURCE_FILE, '-o', QUANT_BINARY];
 
   const build = new Promise((resolve, reject) => {
     const child = spawn(compiler, args, { windowsHide: true, env: extendedEnv });
@@ -160,8 +162,14 @@ async function runCppQuantEngine(inputData) {
     });
 
     // Send input payload via stdin
-    child.stdin.write(JSON.stringify(inputData));
-    child.stdin.end();
+    child.stdin.on('error', error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.kill();
+      reject(error);
+    });
+    child.stdin.end(JSON.stringify(inputData));
   });
 }
 
@@ -224,85 +232,62 @@ function runJsMonteCarloBenchmark(inputData) {
   };
 }
 
-/**
- * Calculates drift, volatility, and correlation matrix from historical daily price bars
- */
-function computeAssetParameters(assetHistoryMap, symbols) {
-  const returnsMap = {};
-  const minLen = Math.min(
-    ...symbols.map(s => (assetHistoryMap[s] && assetHistoryMap[s].length > 1 ? assetHistoryMap[s].length : 0))
-  );
+function isPositiveSemidefinite(matrix) {
+  const factors = matrix.map(row => row.map(() => 0));
+  const tolerance = 1e-10;
 
-  // If we don't have sufficient real history, fall back to institutional defaults
-  if (minLen < 15) {
-    return {
-      expectedReturns: symbols.map(() => 0.15),
-      volatilities: symbols.map(() => 0.22),
-      correlationMatrix: symbols.map((_, i) => symbols.map((_, j) => (i === j ? 1.0 : 0.40)))
-    };
-  }
-
-  // Calculate daily log returns
-  symbols.forEach(sym => {
-    const prices = assetHistoryMap[sym].slice(0, minLen).map(p => parseFloat(p.close || p)).reverse();
-    const logReturns = [];
-    for (let i = 1; i < prices.length; i++) {
-      if (prices[i - 1] > 0 && prices[i] > 0) {
-        logReturns.push(Math.log(prices[i] / prices[i - 1]));
-      }
-    }
-    returnsMap[sym] = logReturns;
-  });
-
-  const numReturns = returnsMap[symbols[0]].length;
-  const expectedReturns = [];
-  const volatilities = [];
-
-  symbols.forEach(sym => {
-    const rets = returnsMap[sym];
-    const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
-    const variance = rets.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / (rets.length - 1);
-    const dailyVol = Math.sqrt(variance);
-
-    // Annualize (252 trading days)
-    expectedReturns.push(Number((mean * 252).toFixed(4)));
-    volatilities.push(Number((dailyVol * Math.sqrt(252)).toFixed(4)));
-  });
-
-  // Calculate Correlation Matrix
-  const correlationMatrix = [];
-  for (let i = 0; i < symbols.length; i++) {
-    const row = [];
-    const retsI = returnsMap[symbols[i]];
-    const meanI = expectedReturns[i] / 252;
-    const volI = volatilities[i] / Math.sqrt(252);
-
-    for (let j = 0; j < symbols.length; j++) {
+  for (let i = 0; i < matrix.length; i++) {
+    for (let j = 0; j <= i; j++) {
+      let residual = matrix[i][j];
+      for (let k = 0; k < j; k++) residual -= factors[i][k] * factors[j][k];
+      if (!Number.isFinite(residual)) return false;
       if (i === j) {
-        row.push(1.0);
-      } else {
-        const retsJ = returnsMap[symbols[j]];
-        const meanJ = expectedReturns[j] / 252;
-        const volJ = volatilities[j] / Math.sqrt(252);
-
-        let cov = 0;
-        for (let k = 0; k < numReturns; k++) {
-          cov += (retsI[k] - meanI) * (retsJ[k] - meanJ);
-        }
-        cov /= (numReturns - 1);
-        const corr = (volI * volJ > 1e-8) ? cov / (volI * volJ) : 0.0;
-        row.push(Number(Math.max(-0.99, Math.min(0.99, corr)).toFixed(4)));
+        if (residual < -tolerance) return false;
+        factors[i][j] = residual > tolerance ? Math.sqrt(residual) : 0;
+      } else if (factors[j][j] > 0) {
+        factors[i][j] = residual / factors[j][j];
+      } else if (Math.abs(residual) > tolerance) {
+        return false;
       }
     }
-    correlationMatrix.push(row);
   }
+  return true;
+}
 
-  return { expectedReturns, volatilities, correlationMatrix };
+function computeAssetParameters(assetHistoryMap, symbols) {
+  const prices = symbols.map(symbol => new Map(
+    (assetHistoryMap[symbol] || [])
+      .filter(bar => /^\d{4}-\d{2}-\d{2}$/.test(bar.datetime) && Number.isFinite(bar.close) && bar.close > 0)
+      .map(bar => [bar.datetime, bar.close])
+  ));
+  const dates = [...prices[0].keys()].filter(date => prices.every(series => series.has(date))).sort();
+  if (dates.length < 15) return null;
+
+  const sampleCount = dates.length - 1;
+  const deviations = prices.map(series => {
+    const returns = dates.slice(1).map((date, index) => Math.log(series.get(date)) - Math.log(series.get(dates[index])));
+    const mean = returns.reduce((sum, value) => sum + value, 0) / sampleCount;
+    return { mean, centered: returns.map(value => value - mean) };
+  });
+
+  const norms = deviations.map(({ centered }) => Math.hypot(...centered));
+  const volatilities = norms.map(norm => norm * Math.sqrt(252 / (sampleCount - 1)));
+  // The GBM integrator subtracts half the variance from the price drift.
+  const expectedReturns = deviations.map(({ mean }, i) => mean * 252 + volatilities[i] ** 2 / 2);
+  const correlationMatrix = deviations.map(({ centered }, i) => deviations.map((other, j) => {
+    if (i === j) return 1;
+    if (norms[i] === 0 || norms[j] === 0) return 0;
+    const crossProduct = centered.reduce((sum, value, k) => sum + value * other.centered[k], 0);
+    return Math.max(-1, Math.min(1, crossProduct / (norms[i] * norms[j])));
+  }));
+
+  return { expectedReturns, volatilities, correlationMatrix, sampleCount, from: dates[0], to: dates.at(-1) };
 }
 
 module.exports = {
   PRESETS,
   runCppQuantEngine,
   runJsMonteCarloBenchmark,
-  computeAssetParameters
+  computeAssetParameters,
+  isPositiveSemidefinite
 };

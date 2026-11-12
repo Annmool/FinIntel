@@ -18,7 +18,6 @@ import {
   CheckCircle2,
   Sparkles,
   BarChart3,
-  Info,
   RefreshCw
 } from 'lucide-react';
 
@@ -74,344 +73,12 @@ const DEFAULT_PRESETS = {
 };
 
 
-// Cholesky decomposition: A = L * L^T for correlated shocks
-function choleskyDecomp(matrix, n) {
-  const L = Array.from({ length: n }, () => new Float64Array(n));
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j <= i; j++) {
-      let sum = 0;
-      for (let k = 0; k < j; k++) sum += L[i][k] * L[j][k];
-      if (i === j) {
-        const val = matrix[i][i] - sum;
-        L[i][j] = val > 1e-12 ? Math.sqrt(val) : 0;
-      } else {
-        L[i][j] = L[j][j] > 1e-12 ? (matrix[i][j] - sum) / L[j][j] : 0;
-      }
-    }
-  }
-  return L;
+function normalizeArrayTo1(weights) {
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  return weights.map(weight => total > 0 ? weight / total : 1 / weights.length);
 }
 
-// Ultra-fast client-side Monte Carlo simulation engine with full feature parity
-function simulateClientSide({
-  symbols,
-  weights,
-  numSimulations,
-  timeHorizonDays,
-  initialPortfolioValue,
-  riskFreeRate,
-  expectedReturns,
-  volatilities,
-  correlationMatrix
-}) {
-  const t0 = performance.now();
-  const n = symbols.length;
-  // Respect the exact user-selected path count (supporting up to 200,000 paths)
-  const M = Math.max(1000, Math.min(200000, parseInt(numSimulations) || 50000));
-  const T = timeHorizonDays;
-  const dt = 1.0 / 252.0;
-  const sqrtDt = Math.sqrt(dt);
-
-  const expReturns = expectedReturns && expectedReturns.length === n
-    ? expectedReturns
-    : symbols.map(() => 0.16);
-
-  const vols = volatilities && volatilities.length === n
-    ? volatilities
-    : symbols.map(() => 0.22);
-
-  // Correlation matrix fallback
-  let corr = correlationMatrix;
-  if (!corr || corr.length !== n) {
-    corr = Array.from({ length: n }, (_, i) =>
-      Array.from({ length: n }, (_, j) => (i === j ? 1.0 : 0.45))
-    );
-  }
-
-  // Covariance matrix
-  const covMatrix = Array.from({ length: n }, (_, i) =>
-    Array.from({ length: n }, (_, j) => corr[i][j] * vols[i] * vols[j])
-  );
-
-  // Cholesky decomposition of correlation matrix
-  const L = choleskyDecomp(corr, n);
-
-  // Pre-scaled Cholesky: scaledL[i][k] = L[i][k] * vol[i] * sqrt(dt)
-  const scaledL = Array.from({ length: n }, (_, i) => {
-    const row = new Float64Array(n);
-    const v = vols[i] * sqrtDt;
-    for (let k = 0; k <= i; k++) {
-      row[k] = L[i][k] * v;
-    }
-    return row;
-  });
-
-  // Precalculated asset drift
-  const drift = new Float64Array(n);
-  const initAssetVals = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    drift[i] = (expReturns[i] - 0.5 * vols[i] * vols[i]) * dt;
-    initAssetVals[i] = initialPortfolioValue * weights[i];
-  }
-
-  // Precalculated baseline portfolio metrics
-  let expectedReturn = 0;
-  for (let i = 0; i < n; i++) expectedReturn += weights[i] * expReturns[i];
-
-  let portVar = 0;
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) {
-      portVar += weights[i] * weights[j] * covMatrix[i][j];
-    }
-  }
-  const volatility = Math.sqrt(Math.max(0, portVar));
-  const sharpeRatio = volatility > 1e-6 ? (expectedReturn - riskFreeRate) / volatility : 0;
-
-  // Box-Muller standard normal generator with state caching
-  let spareNormal = 0;
-  let hasSpare = false;
-  function norm() {
-    if (hasSpare) {
-      hasSpare = false;
-      return spareNormal;
-    }
-    let u = Math.random();
-    while (u <= 1e-15) u = Math.random();
-    const v = Math.random();
-    const r = Math.sqrt(-2.0 * Math.log(u));
-    const theta = 6.283185307179586 * v;
-    spareNormal = r * Math.sin(theta);
-    hasSpare = true;
-    return r * Math.cos(theta);
-  }
-
-  const snapshotSteps = Math.min(T, 25);
-  const snapshotIndices = [];
-  for (let s = 0; s < snapshotSteps; s++) {
-    snapshotIndices.push(Math.round(((s + 1) * T) / snapshotSteps));
-  }
-
-  const endingValues = new Float64Array(M);
-  const maxDrawdowns = new Float64Array(M);
-  const snapshotVals = Array.from({ length: snapshotSteps }, () => new Float64Array(M));
-  const samplePaths = Array.from({ length: 15 }, () => new Float64Array(snapshotSteps));
-
-  const indShocks = new Float64Array(n);
-  const assetVals = new Float64Array(n);
-
-  for (let sim = 0; sim < M; sim++) {
-    for (let i = 0; i < n; i++) assetVals[i] = initAssetVals[i];
-
-    let peak = initialPortfolioValue;
-    let worstDD = 0;
-    let nextSnap = 0;
-    let portTotal = initialPortfolioValue;
-
-    for (let t = 1; t <= T; t++) {
-      for (let i = 0; i < n; i++) indShocks[i] = norm();
-
-      portTotal = 0;
-      for (let i = 0; i < n; i++) {
-        let diffusion = 0;
-        const row = scaledL[i];
-        for (let k = 0; k <= i; k++) {
-          diffusion += row[k] * indShocks[k];
-        }
-        assetVals[i] *= Math.exp(drift[i] + diffusion);
-        portTotal += assetVals[i];
-      }
-
-      if (portTotal > peak) peak = portTotal;
-      const dd = peak > 1e-6 ? (peak - portTotal) / peak : 0;
-      if (dd > worstDD) worstDD = dd;
-
-      if (nextSnap < snapshotSteps && t === snapshotIndices[nextSnap]) {
-        snapshotVals[nextSnap][sim] = portTotal;
-        if (sim < 15) samplePaths[sim][nextSnap] = portTotal;
-        nextSnap++;
-      }
-    }
-    endingValues[sim] = portTotal;
-    maxDrawdowns[sim] = worstDD;
-  }
-
-  // Calculate percentiles at each snapshot day
-  const p5 = [], p25 = [], p50 = [], p75 = [], p95 = [];
-  for (let s = 0; s < snapshotSteps; s++) {
-    const arr = Array.from(snapshotVals[s]).sort((a, b) => a - b);
-    p5.push(arr[Math.floor(M * 0.05)]);
-    p25.push(arr[Math.floor(M * 0.25)]);
-    p50.push(arr[Math.floor(M * 0.50)]);
-    p75.push(arr[Math.floor(M * 0.75)]);
-    p95.push(arr[Math.floor(M * 0.95)]);
-  }
-
-  endingValues.sort();
-  const var95 = Math.max(0, initialPortfolioValue - endingValues[Math.floor(M * 0.05)]);
-  const var99 = Math.max(0, initialPortfolioValue - endingValues[Math.floor(M * 0.01)]);
-
-  // CVaR (Expected Shortfall)
-  const idx95 = Math.floor(M * 0.05);
-  const idx99 = Math.floor(M * 0.01);
-
-  let cvar95Sum = 0;
-  for (let i = 0; i <= idx95; i++) cvar95Sum += (initialPortfolioValue - endingValues[i]);
-  const cvar95 = idx95 > 0 ? cvar95Sum / (idx95 + 1) : var95;
-
-  let cvar99Sum = 0;
-  for (let i = 0; i <= idx99; i++) cvar99Sum += (initialPortfolioValue - endingValues[i]);
-  const cvar99 = idx99 > 0 ? cvar99Sum / (idx99 + 1) : var99;
-
-  // Max Drawdown statistics
-  maxDrawdowns.sort();
-  let meanDD = 0;
-  for (let i = 0; i < M; i++) meanDD += maxDrawdowns[i];
-  meanDD = (meanDD / M) * 100;
-  const worstDD99 = maxDrawdowns[Math.floor(M * 0.99)] * 100;
-
-  // Terminal distribution histogram (20 bins)
-  const numBins = 20;
-  const minVal = endingValues[0];
-  const maxVal = endingValues[M - 1];
-  const binWidth = Math.max(1, (maxVal - minVal) / numBins);
-  const histBins = [];
-  const histCounts = new Array(numBins).fill(0);
-  for (let b = 0; b < numBins; b++) histBins.push(minVal + (b + 0.5) * binWidth);
-  for (let i = 0; i < M; i++) {
-    const b = Math.min(numBins - 1, Math.max(0, Math.floor((endingValues[i] - minVal) / binWidth)));
-    histCounts[b]++;
-  }
-
-  // Fast Dirichlet Markowitz Efficient Frontier Sampling (1,500 samples)
-  const frontierPoints = [];
-  let bestSharpe = { sharpe: -9999, expectedReturn: 0, volatility: 0, weights: [] };
-  let minVol = { sharpe: 0, expectedReturn: 0, volatility: 999999, weights: [] };
-
-  // Single asset extremes
-  for (let i = 0; i < n; i++) {
-    const w = new Array(n).fill(0);
-    w[i] = 1.0;
-    const r = expReturns[i];
-    const v = vols[i];
-    const sh = v > 1e-6 ? (r - riskFreeRate) / v : 0;
-    const pt = { expectedReturn: r, volatility: v, sharpe: sh, weights: w };
-    frontierPoints.push(pt);
-    if (sh > bestSharpe.sharpe) bestSharpe = pt;
-    if (v < minVol.volatility) minVol = pt;
-  }
-
-  const numFrontierSamples = 1500;
-  for (let s = 0; s < numFrontierSamples; s++) {
-    const w = new Float64Array(n);
-    let sum = 0;
-    for (let i = 0; i < n; i++) {
-      let u = Math.random();
-      while (u <= 1e-10) u = Math.random();
-      w[i] = -Math.log(u);
-      sum += w[i];
-    }
-    for (let i = 0; i < n; i++) w[i] /= sum;
-
-    let r = 0;
-    for (let i = 0; i < n; i++) r += w[i] * expReturns[i];
-
-    let vSq = 0;
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-        vSq += w[i] * w[j] * covMatrix[i][j];
-      }
-    }
-    const v = Math.sqrt(Math.max(0, vSq));
-    const sh = v > 1e-6 ? (r - riskFreeRate) / v : 0;
-    const pt = { expectedReturn: r, volatility: v, sharpe: sh, weights: Array.from(w) };
-    frontierPoints.push(pt);
-
-    if (sh > bestSharpe.sharpe) bestSharpe = pt;
-    if (v < minVol.volatility) minVol = pt;
-  }
-
-  // Extract Pareto-optimal curve
-  frontierPoints.sort((a, b) => a.volatility - b.volatility);
-  const paretoCurve = [];
-  let maxR = -9999;
-  for (const pt of frontierPoints) {
-    if (pt.expectedReturn > maxR) {
-      maxR = pt.expectedReturn;
-      paretoCurve.push({ volatility: pt.volatility, expectedReturn: pt.expectedReturn, sharpe: pt.sharpe });
-    }
-  }
-
-  const t1 = performance.now();
-  const execTimeMs = t1 - t0;
-  const totalSteps = M * T * n;
-
-  return {
-    success: true,
-    engineMode: 'local',
-    cpp: {
-      engine: 'FinIntel Client SIMD Engine (Local Hardware)',
-      benchmark: {
-        executionTimeMs: execTimeMs,
-        numThreads: typeof navigator !== 'undefined' ? (navigator.hardwareConcurrency || 4) : 4,
-        simulations: M,
-        timeHorizonDays: T,
-        totalSimulatedSteps: totalSteps,
-        throughputStepsPerSec: totalSteps / (execTimeMs / 1000)
-      },
-      portfolio: {
-        initialValue: initialPortfolioValue,
-        expectedReturn,
-        volatility,
-        sharpeRatio: Number(sharpeRatio.toFixed(2))
-      },
-      risk: {
-        var95_dollar: var95,
-        var95_percent: (var95 / initialPortfolioValue) * 100,
-        var99_dollar: var99,
-        var99_percent: (var99 / initialPortfolioValue) * 100,
-        cvar95_dollar: cvar95,
-        cvar95_percent: (cvar95 / initialPortfolioValue) * 100,
-        cvar99_dollar: cvar99,
-        cvar99_percent: (cvar99 / initialPortfolioValue) * 100,
-        maxDrawdownMean: meanDD,
-        maxDrawdownWorst99: worstDD99
-      },
-      snapshotDays: snapshotIndices,
-      trajectories: { p5, p25, p50, p75, p95 },
-      samplePaths: samplePaths.map(p => Array.from(p)),
-      histogram: {
-        bins: histBins,
-        counts: histCounts
-      },
-      efficientFrontier: {
-        maxSharpe: bestSharpe,
-        minVol: minVol,
-        curve: paretoCurve
-      },
-      methodology: 'Computed instantly using Correlated Geometric Brownian Motion (GBM) via Cholesky Decomposition with Box-Muller standard normals.'
-    }
-  };
-}
-
-// Pure math utility to normalize weights so they sum to exactly 1.0000 (100.0%)
-function normalizeArrayTo1(arr) {
-  const n = arr ? arr.length : 0;
-  if (n === 0) return [];
-  const sum = arr.reduce((acc, v) => acc + (Number(v) || 0), 0);
-  if (sum <= 0) {
-    const eq = Number((1 / n).toFixed(4));
-    const res = new Array(n).fill(eq);
-    const diff = Number((1 - eq * n).toFixed(4));
-    res[n - 1] = Math.max(0, Number((res[n - 1] + diff).toFixed(4)));
-    return res;
-  }
-  const normalized = arr.map(w => Number(((Number(w) || 0) / sum).toFixed(4)));
-  const partialSum = normalized.slice(0, -1).reduce((acc, v) => acc + v, 0);
-  normalized[n - 1] = Math.max(0, Number((1.0 - partialSum).toFixed(4)));
-  return normalized;
-}
-
-export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio = [] }) {
+export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio = [], portfolioPrices = {}, fxRates = {} }) {
   const [presets, setPresets] = useState(DEFAULT_PRESETS);
   const [selectedPreset, setSelectedPreset] = useState('tech-titans');
   const [symbols, setSymbols] = useState(['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN']);
@@ -421,7 +88,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
   const [initialCapital, setInitialCapital] = useState(100000);
   const [riskFreeRate, setRiskFreeRate] = useState(0.045);
   const [engineMode, setEngineMode] = useState('cloud'); // 'cloud' | 'local'
-  const [fallbackNote, setFallbackNote] = useState('');
+  const activeSimulation = useRef(null);
 
   // Responsive Desktop detection for institutional C++ computing
   const [isMobileScreen, setIsMobileScreen] = useState(
@@ -497,87 +164,88 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
       .catch(() => {});
   }, []);
 
-  const runSimulation = useCallback(async (forcedMode = null, targetSymbols = null, targetWeights = null, targetPreset = null) => {
-    const activeMode = forcedMode || engineMode;
-    const activeSyms = targetSymbols || symbols;
-    const activeW = targetWeights || displayedWeights;
-    const activePresetKey = targetPreset !== undefined && targetPreset !== null ? targetPreset : selectedPreset;
-
-    const sum = activeW.reduce((a, b) => a + b, 0);
-    if (!activeSyms.length || activeSyms.length > 50 || Math.abs(sum - 1) > 0.02) {
-      setError(`Allocations must total 100% (currently ${(sum * 100).toFixed(1)}%). Click Normalize or adjust sliders.`);
+  const runSimulation = useCallback(async (forcedMode = null, targetSymbols = null, targetWeights = null, targetPreset = null, capital = initialCapital) => {
+    const mode = forcedMode || engineMode;
+    const activeSymbols = targetSymbols || symbols;
+    const activeWeights = targetWeights || displayedWeights;
+    const preset = presets[targetPreset ?? selectedPreset];
+    const sum = activeWeights.reduce((total, weight) => total + weight, 0);
+    if (!activeSymbols.length || activeSymbols.length > 50 || Math.abs(sum - 1) > 0.02) {
+      setError('Choose 1 to 50 assets and normalize the allocations to 100%.');
+      return;
+    }
+    if (!Number.isFinite(capital) || capital <= 0 || capital > 1e12) {
+      setError('Initial portfolio value must be positive and at most 1 trillion USD.');
+      return;
+    }
+    if (!Number.isFinite(riskFreeRate) || riskFreeRate < 0 || riskFreeRate > 1) {
+      setError('Risk-free rate must be between 0 and 1.');
+      return;
+    }
+    const assetCount = activeSymbols.length;
+    if (numSimulations * timeHorizonDays * assetCount * (assetCount + 1) / 2 > 1_100_000_000) {
+      setError('Reduce the path count, horizon, or number of assets to run this simulation.');
       return;
     }
 
+    activeSimulation.current?.abort();
+    const controller = new AbortController();
+    activeSimulation.current = controller;
     setLoading(true);
     setError('');
-    setFallbackNote('');
+    setResult(null);
 
-    const presetData = presets[activePresetKey] || {};
-    const normalizedWeights = normalizeArrayTo1(activeW);
+    const payload = {
+      symbols: activeSymbols,
+      weights: normalizeArrayTo1(activeWeights),
+      numSimulations,
+      timeHorizonDays,
+      initialPortfolioValue: capital,
+      riskFreeRate,
+      assumptionMode: preset ? 'preset' : 'historical'
+    };
 
-    if (activeMode === 'local') {
-      try {
-        const clientRes = simulateClientSide({
-          symbols: activeSyms,
-          weights: normalizedWeights,
-          numSimulations,
-          timeHorizonDays,
-          initialPortfolioValue: initialCapital,
-          riskFreeRate,
-          expectedReturns: presetData.expectedReturns,
-          volatilities: presetData.volatilities
-        });
-        setResult(clientRes);
-      } catch (err) {
-        setError('Local simulation error: ' + err.message);
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-
-    // Cloud C++ Engine mode
     try {
-      const payload = {
-        symbols: activeSyms,
-        weights: normalizedWeights,
-        numSimulations,
-        timeHorizonDays,
-        initialPortfolioValue: initialCapital,
-        riskFreeRate,
-        expectedReturns: presetData.expectedReturns,
-        volatilities: presetData.volatilities
-      };
-
-      const res = await axios.post(`${API_URL}/api/quant/simulate`, payload, { timeout: 8000 });
-      setResult(res.data);
-    } catch (err) {
-      console.warn('[QuantLab] Cloud Engine latency or error. Falling back seamlessly to local hardware...', err);
-      try {
-        const fallbackRes = simulateClientSide({
-          symbols: activeSyms,
-          weights: normalizedWeights,
-          numSimulations,
-          timeHorizonDays,
-          initialPortfolioValue: initialCapital,
-          riskFreeRate,
-          expectedReturns: presetData.expectedReturns,
-          volatilities: presetData.volatilities
-        });
-        setResult(fallbackRes);
-        setFallbackNote('Connected to client hardware engine for instant zero-lag response.');
-      } catch (clientErr) {
-        setError(err.response?.data?.error || 'Simulation failed. Check parameters.');
+      if (mode === 'cloud') {
+        const { data } = await axios.post(`${API_URL}/api/quant/simulate`, payload, { timeout: 60000, signal: controller.signal });
+        if (!controller.signal.aborted) setResult(data);
+      } else {
+        const expectedReturns = preset?.expectedReturns ?? activeSymbols.map(() => 0.16);
+        const volatilities = preset?.volatilities ?? activeSymbols.map(() => 0.22);
+        const correlationMatrix = activeSymbols.map((_, i) => activeSymbols.map((_, j) => i === j ? 1 : 0.45));
+        const source = preset ? 'preset' : 'hypothetical';
+        const worker = new Worker(new URL('./quant.worker.js', import.meta.url));
+        controller.signal.addEventListener('abort', () => worker.terminate(), { once: true });
+        worker.onmessage = ({ data }) => {
+          worker.terminate();
+          if (controller.signal.aborted) return;
+          if (data.error) setError(data.error);
+          else setResult({
+            ...data.result,
+            assumptions: { ...payload, currency: 'USD', expectedReturns, volatilities, correlationMatrix,
+              sources: { expectedReturns: source, volatilities: source, correlationMatrix: source } }
+          });
+          setLoading(false);
+        };
+        worker.onerror = () => {
+          worker.terminate();
+          if (controller.signal.aborted) return;
+          setError('The browser simulation could not complete.');
+          setLoading(false);
+        };
+        worker.postMessage({ ...payload, expectedReturns, volatilities, correlationMatrix });
+        return;
       }
-    } finally {
-      setLoading(false);
+    } catch (error) {
+      if (!controller.signal.aborted) setError(error.response?.data?.error || error.message || 'Simulation failed.');
     }
+    if (!controller.signal.aborted) setLoading(false);
   }, [symbols, displayedWeights, numSimulations, timeHorizonDays, initialCapital, riskFreeRate, engineMode, presets, selectedPreset]);
 
   // Initial simulation on mount
   useEffect(() => {
     runSimulation();
+    return () => activeSimulation.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -600,36 +268,48 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
       setError(`Your ${name} is empty. Add holdings first or select a preset.`);
       return;
     }
-    const cleanSyms = portfolioList.map(p => p.symbol);
-    const totalQtyVal = portfolioList.reduce((acc, p) => acc + (p.qty * (p.price || 100)), 0);
-    const computedWeights = portfolioList.map(p => {
-      const val = p.qty * (p.price || 100);
-      return totalQtyVal > 0 ? (val / totalQtyVal) : (1 / cleanSyms.length);
-    });
-
-    const normalizedW = normalizeArrayTo1(computedWeights);
+    const values = new Map();
+    for (const holding of portfolioList) {
+      const mark = portfolioPrices[holding.symbol];
+      const pence = mark?.currency === 'GBp' || mark?.currency === 'GBX';
+      const currency = pence ? 'GBP' : mark?.currency;
+      const rate = currency === 'USD' ? 1 : fxRates[currency];
+      const age = Date.now() - Date.parse(mark?.date);
+      if (!mark || !Number.isFinite(rate) || rate <= 0 || !Number.isFinite(age) || age > 7 * 86400000) {
+        setError(`Waiting for a recent price and USD exchange rate for ${holding.symbol}.`);
+        return;
+      }
+      const value = holding.qty * mark.price / (pence ? 100 : 1) / rate;
+      if (!Number.isFinite(value) || value <= 0) {
+        setError(`Invalid market value for ${holding.symbol}.`);
+        return;
+      }
+      values.set(holding.symbol, (values.get(holding.symbol) || 0) + value);
+    }
+    if (values.size > 50) {
+      setError('Quant Lab supports portfolios with up to 50 distinct assets.');
+      return;
+    }
+    const cleanSyms = [...values.keys()];
+    const totalQtyVal = [...values.values()].reduce((sum, value) => sum + value, 0);
+    const normalizedW = normalizeArrayTo1(cleanSyms.map(symbol => values.get(symbol)));
     setSelectedPreset('custom');
     setSymbols(cleanSyms);
     setWeights(normalizedW);
-    if (totalQtyVal > 1000) {
-      setInitialCapital(Math.round(totalQtyVal));
-    }
-    setError('');
-    runSimulation(null, cleanSyms, normalizedW, 'custom');
+    setInitialCapital(totalQtyVal);
+    runSimulation(null, cleanSyms, normalizedW, 'custom', totalQtyVal);
   };
 
   const handleWeightChange = (index, newVal) => {
     const updated = [...displayedWeights];
     updated[index] = Math.max(0, Math.min(1, parseFloat(newVal) || 0));
     setWeights(updated);
-    setSelectedPreset('custom');
   };
 
   const handleAdjustWeightDelta = (index, delta) => {
     const updated = [...displayedWeights];
     updated[index] = Math.max(0, Math.min(1, Number((updated[index] + delta).toFixed(2))));
     setWeights(updated);
-    setSelectedPreset('custom');
   };
 
   const normalizeWeights = () => {
@@ -646,21 +326,19 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     const remainder = Number((1 - eq * (n - 1)).toFixed(4));
     newWeights[n - 1] = Math.max(0, remainder);
     setWeights(newWeights);
-    setSelectedPreset('custom');
     setError('');
   };
 
   const applyOptimalWeights = () => {
     if (!result?.cpp?.efficientFrontier?.maxSharpe?.weights) return;
     const optimal = result.cpp.efficientFrontier.maxSharpe.weights;
-    if (optimal.length !== symbols.length) {
+    if (optimal.length !== symbols.length || result.assumptions?.symbols.some((symbol, i) => symbol !== symbols[i])) {
       setError('Recalculating optimal frontier weights for current portfolio...');
       runSimulation();
       return;
     }
     const normalized = normalizeArrayTo1(optimal.slice(0, symbols.length));
     setWeights(normalized);
-    setSelectedPreset('custom');
     setError('');
   };
 
@@ -1370,7 +1048,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                 <input
                   type="number"
                   value={initialCapital}
-                  onChange={(e) => setInitialCapital(Math.max(1000, parseFloat(e.target.value) || 100000))}
+                  onChange={(e) => setInitialCapital(Number(e.target.value))}
                   className="param-input font-mono"
                 />
               </div>
@@ -1379,9 +1057,11 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                 <label>Risk-Free Rate (Rf)</label>
                 <input
                   type="number"
+                  min="0"
+                  max="1"
                   step="0.005"
                   value={riskFreeRate}
-                  onChange={(e) => setRiskFreeRate(parseFloat(e.target.value) || 0.045)}
+                  onChange={(e) => setRiskFreeRate(Number(e.target.value))}
                   className="param-input font-mono"
                 />
               </div>
@@ -1412,11 +1092,20 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
               </div>
             )}
 
-            {fallbackNote && (
-              <div className="quant-fallback-banner" role="status">
-                <Info size={14} />
-                <span>{fallbackNote}</span>
-              </div>
+            {result?.assumptions && (
+              <details className="quant-fallback-banner">
+                <summary>Simulation assumptions · {result.assumptions.history ? 'USD-adjusted historical prices' : 'Scenario inputs'}</summary>
+                {result.assumptions.history && (
+                  <p>{result.assumptions.history.source} · {result.assumptions.history.observations} aligned returns · {result.assumptions.history.from} to {result.assumptions.history.to}</p>
+                )}
+                <p>Risk-free rate: {(result.assumptions.riskFreeRate * 100).toFixed(2)}%. Annual returns and volatility are scenario estimates.</p>
+                <ul>
+                  {result.assumptions.symbols.map((symbol, i) => (
+                    <li key={symbol}>{symbol}: {(result.assumptions.weights[i] * 100).toFixed(2)}% weight, {(result.assumptions.expectedReturns[i] * 100).toFixed(2)}% return, {(result.assumptions.volatilities[i] * 100).toFixed(2)}% volatility</li>
+                  ))}
+                </ul>
+                <p>Returns: {result.assumptions.sources.expectedReturns}. Volatility: {result.assumptions.sources.volatilities}. Correlation: {result.assumptions.sources.correlationMatrix}.</p>
+              </details>
             )}
 
             {/* High-Performance Diagnostics Card */}
@@ -1446,7 +1135,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                     <span className="metric-box-sub font-mono">
                       {result.engineMode === 'cloud'
                         ? `${result.cpp.benchmark.numThreads} OpenMP thread(s)`
-                        : `${result.cpp.benchmark.numThreads} CPU Core(s)`}
+                        : `${result.cpp.benchmark.numThreads} Worker thread`}
                     </span>
                   </div>
 
@@ -1601,7 +1290,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                       const maxCount = Math.max(1, ...(result.cpp.histogram.counts || [1]));
                       const barH = (count / maxCount) * 100;
                       const binVal = result.cpp.histogram.bins[i];
-                      const isLoss = binVal < initialCapital;
+                      const isLoss = binVal < result.cpp.portfolio.initialValue;
                       return (
                         <div key={i} className="hist-col-modern" title={`$${Math.round(binVal).toLocaleString()}: ${count.toLocaleString()} paths`}>
                           <div
@@ -1676,7 +1365,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                   <span className="risk-sub">
                     {result.cpp.efficientFrontier
                       ? `Frontier Peak: ${result.cpp.efficientFrontier.maxSharpe.sharpe.toFixed(2)}`
-                      : 'Risk-free benchmark: 4.5%'}
+                      : `Risk-free benchmark: ${((result.assumptions?.riskFreeRate ?? riskFreeRate) * 100).toFixed(2)}%`}
                   </span>
                 </div>
               </div>

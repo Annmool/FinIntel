@@ -70,7 +70,7 @@ function Screener({ onClose, onSelectSymbol }) {
                     <span>Back to Overview</span>
                 </button>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span className="term-badge neutral">Live Market Screener</span>
+                    <span className="term-badge neutral">{stocks[0]?.dataStatus === 'sample' ? 'Sample data' : stocks[0]?.dataStatus === 'cached' ? 'Last available data' : 'Market screener'}</span>
                     <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
                         {stocks.length} instruments loaded
                     </span>
@@ -93,7 +93,7 @@ function Screener({ onClose, onSelectSymbol }) {
                             Institutional Market Screener & Global Discovery
                         </h2>
                         <span className="panel-subtitle">
-                            Real-time momentum, volume surges, institutional valuation multiples, and cross-border equities
+                            Market moves, reported trading volume, and valuation metrics
                         </span>
                     </div>
 
@@ -190,7 +190,7 @@ function Screener({ onClose, onSelectSymbol }) {
                             </thead>
                             <tbody>
                                 {filteredStocks.map((s, i) => {
-                                    const change = Number.isFinite(s.regularMarketChangePercent) ? s.regularMarketChangePercent : 0;
+                                    const change = Number.isFinite(s.regularMarketChangePercent) ? s.regularMarketChangePercent : null;
                                     const isPos = change >= 0;
                                     const cur = getSymbolCurrency(s);
                                     const curCode = s.currency || s.symbol;
@@ -202,7 +202,7 @@ function Screener({ onClose, onSelectSymbol }) {
                                     const pe = Number.isFinite(s.trailingPE) && s.trailingPE > 0 ? s.trailingPE.toFixed(1) : '--';
 
                                     return (
-                                        <tr key={s.symbol || i} onClick={() => onSelectSymbol(s.symbol)} style={{ cursor: 'pointer' }}>
+                                        <tr key={s.symbol || i} title={s.quoteTimestamp ? s.quoteSource + ' · ' + new Date(s.quoteTimestamp).toLocaleString() : s.quoteSource || undefined} onClick={() => onSelectSymbol(s.symbol)} style={{ cursor: 'pointer' }}>
                                             <td>
                                                 <span className="font-mono" style={{ fontWeight: '700', color: 'var(--accent)' }}>
                                                     {s.symbol}
@@ -215,10 +215,10 @@ function Screener({ onClose, onSelectSymbol }) {
                                                 {price}
                                             </td>
                                             <td className="num-col font-mono">
-                                                <span className={`term-badge ${isPos ? 'pos' : 'neg'}`}>
+                                                {change === null ? '—' : <span className={`term-badge ${isPos ? 'pos' : 'neg'}`}>
                                                     {isPos ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
                                                     {isPos ? `+${change.toFixed(2)}%` : `${change.toFixed(2)}%`}
-                                                </span>
+                                                </span>}
                                             </td>
                                             <td className="num-col font-mono" style={{ color: 'var(--text-tertiary)', fontSize: '0.78rem' }}>
                                                 {low && high ? `${low} - ${high}` : '--'}

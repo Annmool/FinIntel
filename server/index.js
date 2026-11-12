@@ -10,7 +10,7 @@ const NodeCache = require('node-cache');
 const admin = require('firebase-admin');
 const rateLimit = require('express-rate-limit');
 const { createRequireAuth } = require('./middleware/requireAuth');
-const { validatePaperOrder, calculatePaperOrderTotals, calculateWeightedAveragePrice } = require('./services/paperTrading');
+const { validatePaperOrder, toShareUnits, calculatePaperOrderTotals, calculateWeightedAveragePrice } = require('./services/paperTrading');
 const YahooFinance = require('yahoo-finance2').default;
 const yahooFinance = new YahooFinance({
     suppressNotices: ['yahooSurvey'],
@@ -43,6 +43,7 @@ const Alert = require('./models/Alert');
 const Portfolio = require('./models/Portfolio');
 const VirtualAccount = require('./models/VirtualAccount');
 const PaperPortfolio = require('./models/PaperPortfolio');
+const PaperOrder = require('./models/PaperOrder');
 
 // --- Initialization ---
 const app = express();
@@ -83,8 +84,7 @@ const quantConcurrencyLimit = (req, res, next) => {
         released = true;
         activeQuantJobs = Math.max(0, activeQuantJobs - 1);
     };
-    res.once('finish', releaseSlot);
-    res.once('close', releaseSlot);
+    res.locals.releaseQuantSlot = releaseSlot;
     return next();
 };
 
@@ -539,31 +539,11 @@ app.get('/api/market-briefing', async (req, res) => {
             };
         });
 
-        const headlines = newsList.map(n => n.title).join(". ");
-        let aiPredictions = { higher: [], lower: [] };
-        
-        try {
-            const chatCompletion = await groq.chat.completions.create({
-                messages: [{ 
-                    role: "user", 
-                    content: `Based on these news headlines: "${headlines}", predict 3 stocks that will go higher and 3 stocks that will go lower. Return ONLY a JSON object in this exact format: {"higher": [{"symbol": "TICKER", "reason": "short reason"}], "lower": [{"symbol": "TICKER", "reason": "short reason"}]}`
-                }],
-                model: "llama-3.1-8b-instant",
-                response_format: { type: "json_object" }
-            });
-            aiPredictions = JSON.parse(chatCompletion.choices[0].message.content);
-        } catch (err) {
-            console.error("Groq Briefing Error:", err.message);
-        }
-
-        return {
-            news: newsList.slice(0, 10),
-            predictions: aiPredictions
-        };
+        return { news: newsList.slice(0, 10) };
         }, { shouldCache: value => Boolean(value?.news?.length) });
         res.json(finalData);
     } catch (e) { 
-        res.json({ news: [], predictions: { higher: [], lower: [] } }); 
+        res.json({ news: [] });
     }
 });
 
@@ -702,7 +682,8 @@ app.delete('/api/portfolio/:id', async (req, res) => {
 
 // --- Forex FX Rate Engine (ExchangeRate-API Primary with Yahoo & OpenER Fallbacks) ---
 async function loadGlobalFxRates() {
-    const rates = { ...DEFAULT_FX_RATES };
+    const rates = {};
+    const marketTimes = {};
     let fetched = false;
     let source = 'Static fallback';
     let sourceUpdatedAt = null;
@@ -738,11 +719,13 @@ async function loadGlobalFxRates() {
                 for (const q of quotes) {
                     const val = q?.regularMarketPrice;
                     if (!Number.isFinite(val) || val <= 0) continue;
+                    const currency = q.symbol === 'USDINR=X' ? 'INR' : q.symbol.slice(0, 3);
+                    marketTimes[currency] = marketTimeMs(q.regularMarketTime);
                     if (q.symbol === 'KRW=X') rates.KRW = val;
                     else if (q.symbol === 'USDINR=X') {
                         rates.INR = val;
                         usdInrQuoteFound = true;
-                        sourceUpdatedAt = q.regularMarketTime ? new Date(q.regularMarketTime * 1000).toISOString() : null;
+                        sourceUpdatedAt = Number.isFinite(marketTimes.INR) ? new Date(marketTimes.INR).toISOString() : null;
                     }
                     else if (q.symbol === 'JPY=X') rates.JPY = val;
                     else if (q.symbol === 'CAD=X') rates.CAD = val;
@@ -753,7 +736,7 @@ async function loadGlobalFxRates() {
                     else if (q.symbol === 'GBPUSD=X') rates.GBP = 1 / val;
                     else if (q.symbol === 'AUDUSD=X') rates.AUD = 1 / val;
                 }
-                if (usdInrQuoteFound) {
+                if (usdInrQuoteFound || Object.keys(rates).length > 0) {
                     fetched = true;
                     source = 'Yahoo Finance';
                 }
@@ -767,7 +750,8 @@ async function loadGlobalFxRates() {
     if (!fetched || !rates.INR) {
         try {
             const fallbackRes = await axios.get('https://open.er-api.com/v6/latest/USD', { timeout: 3500 });
-            if (fallbackRes.data?.rates) {
+            if (Number.isFinite(fallbackRes.data?.rates?.INR) && fallbackRes.data.rates.INR > 0) {
+                for (const code of Object.keys(rates)) delete rates[code];
                 for (const [code, rateVal] of Object.entries(fallbackRes.data.rates)) {
                     if (Number.isFinite(rateVal) && rateVal > 0) {
                         rates[code] = rateVal;
@@ -783,8 +767,13 @@ async function loadGlobalFxRates() {
         }
     }
 
+    const providerRates = Object.fromEntries(Object.entries(rates).filter(([currency]) => {
+        const time = source === 'Yahoo Finance' ? marketTimes[currency] : Date.parse(sourceUpdatedAt);
+        return isRecentMarketTime(time);
+    }));
     return {
-        rates,
+        rates: { ...DEFAULT_FX_RATES, ...rates },
+        providerRates,
         source,
         sourceUpdatedAt,
         fetchedAt: new Date().toISOString(),
@@ -797,16 +786,6 @@ async function getGlobalFxQuote(forceRefresh = false) {
     const servedFromCache = !forceRefresh && myCache.get('GLOBAL_FX_RATES') !== undefined;
     const quote = await getOrLoad('GLOBAL_FX_RATES', 60, loadGlobalFxRates);
     return { ...quote, cached: servedFromCache };
-}
-
-async function getGlobalFxRates(forceRefresh = false) {
-    const quote = await getGlobalFxQuote(forceRefresh);
-    return quote.rates;
-}
-
-async function getUsdInrRate() {
-    const rates = await getGlobalFxRates();
-    return rates.INR || DEFAULT_FX_RATES.INR;
 }
 
 // Forex Rate Endpoint (Multi-Currency Support with Instant Cache Invalidation & Auto-Refresh)
@@ -823,6 +802,7 @@ app.get('/api/forex/rate', async (req, res) => {
             target: 'INR',
             rate: rates.INR || DEFAULT_FX_RATES.INR,
             rates,
+            providerRates: quote.providerRates,
             cached: quote.cached,
             source: quote.source,
             sourceUpdatedAt: quote.sourceUpdatedAt,
@@ -874,318 +854,184 @@ app.get('/api/paper-portfolio/:userId', async (req, res) => {
 // Paper Trading: Get Balance
 app.get('/api/virtual-account/:userId', async (req, res) => {
     if (req.params.userId !== req.user.uid) return res.status(403).json({ error: 'Forbidden.' });
-    let account = await VirtualAccount.findOne({ userId: req.user.uid });
-    if (!account) {
-        account = new VirtualAccount({ userId: req.user.uid, balance: 100000 });
-        await account.save();
-    }
-    res.json(account);
+    res.json(await getOrCreateVirtualAccount(req.user.uid));
 });
 
-async function getPaperMarketQuote(symbol, fallbackPrice, fallbackCurrency) {
-    const cleanSym = String(symbol || '').trim().toUpperCase();
-    const inferredCur = inferCurrencyFromSymbol(cleanSym);
-
-    return getOrLoad(`paper_quote_${cleanSym}`, 10, async () => {
-        // 1. Try Yahoo Finance
-        try {
-            const result = await yahooFinance.quote(cleanSym, {}, { validateResult: false });
-            const quote = Array.isArray(result) ? result[0] : result;
-            const price = Number(quote?.regularMarketPrice);
-            if (Number.isFinite(price) && price > 0) {
-                const providerCurrency = String(quote.currency || inferredCur).trim();
-                const isPenceQuote = providerCurrency === 'GBp' || providerCurrency.toUpperCase() === 'GBX';
-                const currency = isPenceQuote ? 'GBP' : providerCurrency.toUpperCase();
-                const normalizedPrice = isPenceQuote ? price / 100 : price;
-                return {
-                    price: normalizedPrice,
-                    currency,
-                    source: 'Yahoo Finance',
-                    sourceUpdatedAt: quote.regularMarketTime
-                        ? new Date(quote.regularMarketTime * 1000).toISOString()
-                        : new Date().toISOString()
-                };
-            }
-        } catch (yfErr) {
-            console.warn(`Yahoo Finance quote failed for ${cleanSym} (${yfErr.message}). Attempting fallback providers...`);
-        }
-
-        // 2. Try Finnhub API (Fast, resilient against crumb errors)
-        if (process.env.FINNHUB_API_KEY) {
-            try {
-                const finnhubRes = await axios.get(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(cleanSym)}&token=${process.env.FINNHUB_API_KEY}`, { timeout: 3500 });
-                const fhPrice = Number(finnhubRes.data?.c);
-                if (Number.isFinite(fhPrice) && fhPrice > 0) {
-                    return {
-                        price: fhPrice,
-                        currency: inferredCur || 'USD',
-                        source: 'Finnhub',
-                        sourceUpdatedAt: finnhubRes.data?.t
-                            ? new Date(finnhubRes.data.t * 1000).toISOString()
-                            : new Date().toISOString()
-                    };
-                }
-            } catch (fhErr) {
-                console.warn(`Finnhub quote fallback failed for ${cleanSym} (${fhErr.message}).`);
-            }
-        }
-
-        // 3. Try Twelve Data API
-        if (process.env.STOCK_API_KEY) {
-            try {
-                const tdRes = await axios.get(`https://api.twelvedata.com/price?symbol=${encodeURIComponent(cleanSym)}&apikey=${process.env.STOCK_API_KEY}`, { timeout: 3500 });
-                const tdPrice = parseFloat(tdRes.data?.price);
-                if (Number.isFinite(tdPrice) && tdPrice > 0) {
-                    return {
-                        price: tdPrice,
-                        currency: inferredCur || 'USD',
-                        source: 'Twelve Data',
-                        sourceUpdatedAt: new Date().toISOString()
-                    };
-                }
-            } catch (tdErr) {
-                console.warn(`Twelve Data quote fallback failed for ${cleanSym} (${tdErr.message}).`);
-            }
-        }
-
-        // 4. Try client-provided indicative price (from active chart/order slip)
-        const parsedFallback = parseFloat(fallbackPrice);
-        if (Number.isFinite(parsedFallback) && parsedFallback > 0) {
-            const cur = (fallbackCurrency && typeof fallbackCurrency === 'string')
-                ? fallbackCurrency.trim().toUpperCase()
-                : inferredCur;
-            return {
-                price: parsedFallback,
-                currency: cur,
-                source: 'Chart Live Telemetry',
-                sourceUpdatedAt: new Date().toISOString()
-            };
-        }
-
-        // 5. Try recent cached price from memory cache
-        const cachedRaw = memoryCache.get(`market_quote_${cleanSym}`) || memoryCache.get(`stock_quote_${cleanSym}`);
-        if (cachedRaw?.price && Number.isFinite(cachedRaw.price) && cachedRaw.price > 0) {
-            return {
-                price: cachedRaw.price,
-                currency: cachedRaw.currency || inferredCur,
-                source: 'Market Cache',
-                sourceUpdatedAt: new Date().toISOString()
-            };
-        }
-
-        const error = new Error(`Could not get a valid market quote for ${cleanSym}. Try again later.`);
-        error.status = 503;
-        throw error;
-    }, { shouldCache: quote => Number.isFinite(quote?.price) && quote.price > 0 });
+function getOrCreateVirtualAccount(userId, session) {
+    return VirtualAccount.findOneAndUpdate(
+        { userId },
+        { $setOnInsert: { balance: 100000 } },
+        { new: true, upsert: true, session }
+    );
 }
 
-// Paper Trading: Buy (Handles multi-currency normalized against USD balance)
-app.post('/api/paper-portfolio/buy', async (req, res) => {
-    let order;
-    try {
-        order = validatePaperOrder(req.body.symbol, req.body.qty);
-    } catch (error) {
-        return res.status(400).json({ error: error.message });
-    }
-    const { symbol: cleanSymbol, quantity: parsedQty } = order;
-    let quote;
-    try {
-        quote = await getPaperMarketQuote(cleanSymbol, req.body.price, req.body.currency);
-    } catch (error) {
-        return res.status(error.status || 503).json({ error: error.message });
-    }
-    const fxRates = await getGlobalFxRates();
-    let totals;
-    try {
-        totals = calculatePaperOrderTotals(parsedQty, quote.price, quote.currency, fxRates);
-    } catch (error) {
-        return res.status(400).json({ error: error.message });
-    }
-    const { currency: stockCur, nativeAmount: totalCostNative, usdAmount: totalCostUsd } = totals;
-    // Normalize into USD virtual account balance
-    const curSymbol = getCurrencySymbol(stockCur);
+function marketTimeMs(timestamp) {
+    if (timestamp instanceof Date) return timestamp.getTime();
+    return Number.isFinite(timestamp) ? timestamp * 1000 : NaN;
+}
 
-    let account;
-    let holding;
-    try {
-        const session = await mongoose.startSession();
+function isRecentMarketTime(time) {
+    const age = Date.now() - time;
+    return age >= -60000 && age <= 7 * 86400000;
+}
+
+async function getPaperMarketQuote(symbol) {
+    return getOrLoad(`paper_quote_${symbol}`, 10, async () => {
         try {
-            await session.withTransaction(async () => {
-                account = await VirtualAccount.findOneAndUpdate(
-                    { userId: req.user.uid },
-                    { $setOnInsert: { balance: 100000 } },
-                    { new: true, upsert: true, session }
-                );
-                if (account.balance < totalCostUsd) {
-                    const error = new Error(`Insufficient virtual funds. Cost: $${totalCostUsd.toFixed(2)} USD (${curSymbol}${totalCostNative.toLocaleString()} ${stockCur}), Available: $${account.balance.toFixed(2)}`);
-                    error.status = 400;
-                    throw error;
+            const result = await yahooFinance.quote(symbol, {}, { validateResult: false });
+            const quote = Array.isArray(result) ? result[0] : result;
+            if (quote?.symbol?.toUpperCase() === symbol) {
+                const currency = quote.currency;
+                const quotedInPence = currency === 'GBp' || currency === 'GBX';
+                const price = Number(quote.regularMarketPrice) / (quotedInPence ? 100 : 1);
+                const time = marketTimeMs(quote.regularMarketTime);
+                // Last traded prices remain usable during weekends and exchange holidays.
+                if (Number.isFinite(price) && price > 0 && (quotedInPence || /^[A-Z]{3}$/.test(currency)) &&
+                    isRecentMarketTime(time)) {
+                    return { price, currency: quotedInPence ? 'GBP' : currency, source: 'Yahoo Finance', sourceUpdatedAt: new Date(time).toISOString() };
                 }
-                account.balance = Number((account.balance - totalCostUsd).toFixed(2));
-                await account.save({ session });
-
-                holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol }).session(session);
-                if (holding) {
-                    const weightedPrice = calculateWeightedAveragePrice(holding.qty, holding.price, parsedQty, quote.price);
-                    holding.qty += parsedQty;
-                    holding.price = weightedPrice;
-                    holding.currency = quote.currency;
-                    await holding.save({ session });
-                } else {
-                    holding = new PaperPortfolio({ userId: req.user.uid, symbol: cleanSymbol, currency: quote.currency, qty: parsedQty, price: quote.price });
-                    await holding.save({ session });
-                }
-            });
-        } finally {
-            await session.endSession();
-        }
-    } catch (error) {
-        if (error.status === 400) return res.status(400).json({ error: error.message });
-        // Fallback for standalone Mongo instances where transactions are not supported
-        if (error.message?.includes('replica set') || error.message?.includes('Transaction numbers')) {
-            try {
-                account = await VirtualAccount.findOneAndUpdate(
-                    { userId: req.user.uid },
-                    { $setOnInsert: { balance: 100000 } },
-                    { new: true, upsert: true }
-                );
-                if (account.balance < totalCostUsd) {
-                    return res.status(400).json({ error: `Insufficient virtual funds. Cost: $${totalCostUsd.toFixed(2)} USD (${curSymbol}${totalCostNative.toLocaleString()} ${stockCur}), Available: $${account.balance.toFixed(2)}` });
-                }
-                account.balance = Number((account.balance - totalCostUsd).toFixed(2));
-                await account.save();
-
-                holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol });
-                if (holding) {
-                    const weightedPrice = calculateWeightedAveragePrice(holding.qty, holding.price, parsedQty, quote.price);
-                    holding.qty += parsedQty;
-                    holding.price = weightedPrice;
-                    holding.currency = quote.currency;
-                    await holding.save();
-                } else {
-                    holding = new PaperPortfolio({ userId: req.user.uid, symbol: cleanSymbol, currency: quote.currency, qty: parsedQty, price: quote.price });
-                    await holding.save();
-                }
-            } catch (fallbackErr) {
-                return res.status(500).json({ error: fallbackErr.message || 'Failed to complete order.' });
             }
-        } else {
-            return res.status(error.status || 500).json({ error: error.message || 'Failed to execute paper buy.' });
+        } catch (error) {
+            console.warn(`Paper quote unavailable for ${symbol}: ${error.message}`);
         }
-    }
-    
-    res.json({
-        holding,
-        balance: account.balance,
-        fxRates,
-        rate: fxRates.INR || DEFAULT_FX_RATES.INR,
-        executedPrice: quote.price,
-        currency: quote.currency,
-        quoteSource: quote.source,
-        quoteTimestamp: quote.sourceUpdatedAt
+        throw Object.assign(new Error(`No recent verified market quote for ${symbol}. Try again later.`), { status: 503 });
     });
-});
+}
 
-// Paper Trading: Sell (Handles multi-currency normalized against USD balance)
-app.post('/api/paper-portfolio/sell', async (req, res) => {
-    let order;
-    try {
-        order = validatePaperOrder(req.body.symbol, req.body.qty);
-    } catch (error) {
-        return res.status(400).json({ error: error.message });
-    }
-    const { symbol: cleanSymbol, quantity: parsedQty } = order;
-    let quote;
-    try {
-        quote = await getPaperMarketQuote(cleanSymbol, req.body.price, req.body.currency);
-    } catch (error) {
-        return res.status(error.status || 503).json({ error: error.message });
-    }
-    const fxRates = await getGlobalFxRates();
-    let totals;
-    try {
-        totals = calculatePaperOrderTotals(parsedQty, quote.price, quote.currency, fxRates);
-    } catch (error) {
-        return res.status(400).json({ error: error.message });
-    }
-    const { currency: stockCur, nativeAmount: totalRevenueNative, usdAmount: totalRevenueUsd } = totals;
+function paperOrderError(status, message) {
+    return Object.assign(new Error(message), { status });
+}
 
-    let holding;
-    let account;
-    try {
-        const session = await mongoose.startSession();
+function submitPaperOrder(side) {
+    return async (req, res) => {
+        let order;
+        let shareUnits;
+        const { symbol, qty, orderId } = req.body ?? {};
         try {
-            await session.withTransaction(async () => {
-                holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol }).session(session);
-                if (!holding || holding.qty < parsedQty) {
-                    const error = new Error('Not enough shares to sell');
-                    error.status = 400;
-                    throw error;
-                }
-
-                account = await VirtualAccount.findOneAndUpdate(
-                    { userId: req.user.uid },
-                    { $setOnInsert: { balance: 100000 } },
-                    { new: true, upsert: true, session }
-                );
-                account.balance = Number((account.balance + totalRevenueUsd).toFixed(2));
-                await account.save({ session });
-
-                holding.qty = Number((holding.qty - parsedQty).toFixed(4));
-                if (holding.qty <= 0.0001) {
-                    await PaperPortfolio.deleteOne({ _id: holding._id, userId: req.user.uid }, { session });
-                    holding = null;
-                } else {
-                    await holding.save({ session });
-                }
-            });
-        } finally {
-            await session.endSession();
-        }
-    } catch (error) {
-        if (error.status === 400) return res.status(400).json({ error: error.message });
-        // Fallback for standalone Mongo instances
-        if (error.message?.includes('replica set') || error.message?.includes('Transaction numbers')) {
-            try {
-                holding = await PaperPortfolio.findOne({ userId: req.user.uid, symbol: cleanSymbol });
-                if (!holding || holding.qty < parsedQty) {
-                    return res.status(400).json({ error: 'Not enough shares to sell' });
-                }
-
-                account = await VirtualAccount.findOneAndUpdate(
-                    { userId: req.user.uid },
-                    { $setOnInsert: { balance: 100000 } },
-                    { new: true, upsert: true }
-                );
-                account.balance = Number((account.balance + totalRevenueUsd).toFixed(2));
-                await account.save();
-
-                holding.qty = Number((holding.qty - parsedQty).toFixed(4));
-                if (holding.qty <= 0.0001) {
-                    await PaperPortfolio.deleteOne({ _id: holding._id, userId: req.user.uid });
-                    holding = null;
-                } else {
-                    await holding.save();
-                }
-            } catch (fallbackErr) {
-                return res.status(500).json({ error: fallbackErr.message || 'Failed to complete order.' });
+            order = validatePaperOrder(symbol, qty);
+            if (typeof orderId !== 'string' || !/^[a-zA-Z0-9_-]{16,80}$/.test(orderId)) {
+                throw new Error('Provide a valid order ID for safe retries.');
             }
-        } else {
-            return res.status(error.status || 500).json({ error: error.message || 'Failed to execute paper sell.' });
+            // A full sale may close a legacy position with more than four decimals.
+            if (side === 'buy') shareUnits = toShareUnits(order.quantity);
+        } catch (error) {
+            return res.status(400).json({ error: error.message });
         }
-    }
 
-    res.json({
-        holding,
-        balance: account.balance,
-        fxRates,
-        rate: fxRates.INR || DEFAULT_FX_RATES.INR,
-        executedPrice: quote.price,
-        currency: quote.currency,
-        quoteSource: quote.source,
-        quoteTimestamp: quote.sourceUpdatedAt
-    });
-});
+        const userId = req.user.uid;
+        const { symbol: cleanSymbol, quantity } = order;
+        const key = JSON.stringify([userId, orderId]);
+        const readReceipt = receipt => {
+            if (receipt.side !== side || receipt.symbol !== cleanSymbol || receipt.quantity !== quantity) {
+                throw paperOrderError(409, 'This order ID was used for a different order.');
+            }
+            return receipt.response;
+        };
+        try {
+            const existingReceipt = await PaperOrder.findById(key).lean();
+            if (existingReceipt) return res.json(readReceipt(existingReceipt));
+
+            const quote = await getPaperMarketQuote(cleanSymbol);
+            const fx = quote.currency === 'USD' ? null : await getGlobalFxQuote();
+            if (fx && !fx.providerRates[quote.currency]) {
+                throw paperOrderError(503, `No verified USD exchange rate for ${quote.currency}. Try again later.`);
+            }
+            const fxRates = fx?.rates ?? DEFAULT_FX_RATES;
+            let totals;
+            try {
+                totals = calculatePaperOrderTotals(quantity, quote.price, quote.currency, fx?.providerRates);
+            } catch (error) {
+                throw paperOrderError(400, error.message);
+            }
+
+            const session = await mongoose.startSession();
+            try {
+                const response = await session.withTransaction(async () => {
+                    const receipt = await PaperOrder.findById(key).session(session).lean();
+                    if (receipt) return readReceipt(receipt);
+
+                    const account = await getOrCreateVirtualAccount(userId, session);
+                    let holding = await PaperPortfolio.findOne({ userId, symbol: cleanSymbol }).session(session);
+                    const cashCents = Math.round(account.balance * 100);
+                    const orderCents = Math.round(totals.usdAmount * 100);
+                    const nextCashCents = side === 'buy' ? cashCents - orderCents : cashCents + orderCents;
+                    if (nextCashCents < 0) throw paperOrderError(400, 'Insufficient virtual funds.');
+                    if (!Number.isSafeInteger(nextCashCents)) throw paperOrderError(400, 'Virtual balance is outside the supported range.');
+
+                    if (side === 'buy') {
+                        if (holding) {
+                            const holdingUnits = Math.round(holding.qty * 10000);
+                            if (!Number.isSafeInteger(holdingUnits + shareUnits) || holdingUnits / 10000 !== holding.qty) {
+                                throw paperOrderError(409, 'Close this legacy fractional position before adding shares.');
+                            }
+                            if (holding.currency && holding.currency !== quote.currency) {
+                                throw paperOrderError(409, 'The quote currency differs from the stored position. Close the position before adding shares.');
+                            }
+                            holding.price = calculateWeightedAveragePrice(holding.qty, holding.price, quantity, quote.price);
+                            holding.qty = (holdingUnits + shareUnits) / 10000;
+                            holding.currency = quote.currency;
+                        } else {
+                            holding = new PaperPortfolio({ userId, symbol: cleanSymbol, currency: quote.currency, qty: quantity, price: quote.price });
+                        }
+                        await holding.save({ session });
+                    } else {
+                        if (!holding || holding.qty < quantity) throw paperOrderError(400, 'Not enough shares to sell.');
+                        if (holding.qty === quantity) {
+                            await holding.deleteOne({ session });
+                            holding = null;
+                        } else {
+                            try {
+                                const holdingUnits = toShareUnits(holding.qty);
+                                holding.qty = (holdingUnits - toShareUnits(quantity)) / 10000;
+                            } catch (error) {
+                                throw paperOrderError(400, 'Partial sales require four-decimal share quantities. Close the full position to sell legacy fractions.');
+                            }
+                            await holding.save({ session });
+                        }
+                    }
+
+                    account.balance = nextCashCents / 100;
+                    await account.save({ session });
+                    const result = {
+                        holding: holding?.toObject() ?? null,
+                        balance: account.balance,
+                        fxRates,
+                        rate: fxRates.INR,
+                        executedPrice: quote.price,
+                        currency: quote.currency,
+                        quoteSource: quote.source,
+                        quoteTimestamp: quote.sourceUpdatedAt,
+                        usdAmount: totals.usdAmount,
+                        fxRate: fx?.providerRates[quote.currency] ?? 1,
+                        fxSource: fx?.source ?? null
+                    };
+                    await PaperOrder.create([{ _id: key, side, symbol: cleanSymbol, quantity, response: result }], { session });
+                    return result;
+                });
+                res.json(response);
+            } finally {
+                await session.endSession();
+            }
+        } catch (error) {
+            if (error.code === 11000) {
+                try {
+                    const receipt = await PaperOrder.findById(key).lean();
+                    if (receipt) return res.json(readReceipt(receipt));
+                } catch (receiptError) {
+                    if (receiptError.status) return res.status(receiptError.status).json({ error: receiptError.message });
+                    throw receiptError;
+                }
+                return res.status(503).json({ error: 'Concurrent order update. Retry with the same order ID.' });
+            }
+            if (error.status) return res.status(error.status).json({ error: error.message });
+            console.error('Paper order failed:', error.message);
+            res.status(503).json({ error: 'Paper order settlement is unavailable. Retry with the same order ID.' });
+        }
+    };
+}
+
+app.post('/api/paper-portfolio/buy', submitPaperOrder('buy'));
+app.post('/api/paper-portfolio/sell', submitPaperOrder('sell'));
 
 // Curated Multi-Market Screener Universe (US Tech, Mega-Caps, Indian NSE Bluechips)
 const SCREENER_UNIVERSE = [
@@ -1327,18 +1173,17 @@ const SEED_SCREENER_CACHE = {
     ]
 };
 
-// Initialize in-memory screener cache with seeded benchmark snapshots so it is NEVER empty
-const lastKnownScreenerCache = {
-    day_gainers: [...SEED_SCREENER_CACHE.day_gainers],
-    day_losers: [...SEED_SCREENER_CACHE.day_losers],
-    most_actives: [...SEED_SCREENER_CACHE.most_actives],
-    undervalued_large_caps: [...SEED_SCREENER_CACHE.undervalued_large_caps],
-    tech_titans: [...SEED_SCREENER_CACHE.tech_titans],
-    indian_market: [...SEED_SCREENER_CACHE.indian_market]
-};
+const lastKnownScreenerCache = {};
+
+function screenerFallback(type) {
+    const cached = lastKnownScreenerCache[type];
+    if (cached) return cached.map(quote => ({ ...quote, dataStatus: 'cached' }));
+    return (SEED_SCREENER_CACHE[type] || []).map(quote => ({ ...quote, dataStatus: 'sample' }));
+}
 
 function normalizeScreenerQuote(q) {
-    if (!q || !q.symbol) return null;
+    if (!q?.symbol || !Number.isFinite(q.regularMarketPrice) || q.regularMarketPrice <= 0) return null;
+    const time = marketTimeMs(q.regularMarketTime);
     const meta = SEED_INSTRUMENT_META[q.symbol] || {};
     const price = Number.isFinite(q.regularMarketPrice) ? q.regularMarketPrice : null;
     return {
@@ -1346,14 +1191,16 @@ function normalizeScreenerQuote(q) {
         shortName: q.shortName || q.longName || meta.shortName || q.symbol,
         longName: q.longName || q.shortName || meta.shortName || q.symbol,
         regularMarketPrice: price,
+        quoteSource: 'Yahoo Finance',
+        quoteTimestamp: Number.isFinite(time) ? new Date(time).toISOString() : null,
         regularMarketChangePercent: Number.isFinite(q.regularMarketChangePercent) 
             ? q.regularMarketChangePercent 
-            : (Number.isFinite(q.regularMarketChange) && price ? (q.regularMarketChange / price) * 100 : 0),
+            : (Number.isFinite(q.regularMarketChange) && price > q.regularMarketChange ? q.regularMarketChange / (price - q.regularMarketChange) * 100 : null),
         regularMarketDayHigh: Number.isFinite(q.regularMarketDayHigh) ? q.regularMarketDayHigh : null,
         regularMarketDayLow: Number.isFinite(q.regularMarketDayLow) ? q.regularMarketDayLow : null,
-        regularMarketVolume: Number.isFinite(q.regularMarketVolume) ? q.regularMarketVolume : 0,
-        marketCap: Number.isFinite(q.marketCap) ? q.marketCap : (meta.marketCap || null),
-        trailingPE: Number.isFinite(q.trailingPE) ? q.trailingPE : (meta.trailingPE || null),
+        regularMarketVolume: Number.isFinite(q.regularMarketVolume) ? q.regularMarketVolume : null,
+        marketCap: Number.isFinite(q.marketCap) ? q.marketCap : null,
+        trailingPE: Number.isFinite(q.trailingPE) ? q.trailingPE : null,
         currency: q.currency || inferCurrencyFromSymbol(q.symbol)
     };
 }
@@ -1438,12 +1285,14 @@ app.get('/api/screener/:type', async (req, res) => {
                                     shortName: meta.shortName || sym,
                                     longName: meta.shortName || sym,
                                     regularMarketPrice: d.c,
-                                    regularMarketChangePercent: Number.isFinite(d.dp) ? d.dp : 0,
+                                    regularMarketChangePercent: Number.isFinite(d.dp) ? d.dp : null,
+                                    quoteSource: 'Finnhub',
+                                    quoteTimestamp: Number.isFinite(d.t) && d.t > 0 ? new Date(d.t * 1000).toISOString() : null,
                                     regularMarketDayHigh: d.h || null,
                                     regularMarketDayLow: d.l || null,
-                                    regularMarketVolume: 10000000,
-                                    marketCap: meta.marketCap || null,
-                                    trailingPE: meta.trailingPE || null,
+                                    regularMarketVolume: null,
+                                    marketCap: null,
+                                    trailingPE: null,
                                     currency: 'USD'
                                 });
                             }
@@ -1455,21 +1304,21 @@ app.get('/api/screener/:type', async (req, res) => {
 
                 if (validQuotes.length > 0) {
                     if (type === 'day_gainers') {
-                        quotes = [...validQuotes]
+                        quotes = validQuotes.filter(q => Number.isFinite(q.regularMarketChangePercent))
                             .sort((a, b) => b.regularMarketChangePercent - a.regularMarketChangePercent)
                             .slice(0, 15);
                     } else if (type === 'day_losers') {
-                        quotes = [...validQuotes]
+                        quotes = validQuotes.filter(q => Number.isFinite(q.regularMarketChangePercent))
                             .sort((a, b) => a.regularMarketChangePercent - b.regularMarketChangePercent)
                             .slice(0, 15);
                     } else if (type === 'most_actives') {
-                        quotes = [...validQuotes]
+                        quotes = validQuotes.filter(q => q.regularMarketVolume > 0)
                             .sort((a, b) => b.regularMarketVolume - a.regularMarketVolume)
                             .slice(0, 15);
                     } else if (type === 'undervalued_large_caps') {
                         quotes = [...validQuotes]
-                            .filter(q => (q.marketCap || 0) >= 40e9)
-                            .sort((a, b) => (a.trailingPE || 999) - (b.trailingPE || 999))
+                            .filter(q => q.currency === 'USD' && q.marketCap >= 40e9 && q.trailingPE > 0)
+                            .sort((a, b) => a.trailingPE - b.trailingPE)
                             .slice(0, 15);
                     } else if (type === 'tech_titans') {
                         quotes = [...validQuotes]
@@ -1485,23 +1334,15 @@ app.get('/api/screener/:type', async (req, res) => {
                 }
             }
 
-            // 4. Update or retrieve persistent screener cache
-            if (quotes.length > 0) {
-                lastKnownScreenerCache[type] = quotes;
-            } else if (lastKnownScreenerCache[type]?.length > 0) {
-                quotes = lastKnownScreenerCache[type];
-            } else if (SEED_SCREENER_CACHE[type]?.length > 0) {
-                quotes = SEED_SCREENER_CACHE[type];
-            }
-
+            if (quotes.length > 0) lastKnownScreenerCache[type] = quotes;
             return quotes;
-        }, { shouldCache: value => Array.isArray(value) && value.length > 0 });
+        }, { shouldCache: value => value.length > 0 });
 
-        res.json(quotes);
+        res.json(quotes.length > 0 ? quotes : screenerFallback(type));
     } catch (e) {
         console.error(`Screener provider error (${req.params.type}):`, e.message);
         // Fallback to seeded baseline cache even if an unexpected error occurs so UI never blanks out
-        const fallback = lastKnownScreenerCache[req.params.type] || SEED_SCREENER_CACHE[req.params.type] || [];
+        const fallback = screenerFallback(req.params.type);
         if (fallback.length > 0) {
             return res.json(fallback);
         }
@@ -1542,26 +1383,67 @@ app.post('/api/ai-analysis', aiAnalysisLimiter, async (req, res) => {
         const newsSummary = newsItems.slice(0, 2).map(n => n?.title || '').filter(Boolean).join(". ");
         
         let analysisText = "";
+        let source = "model";
         try {
             const chatCompletion = await groq.chat.completions.create({
-                messages: [{ role: "user", content: `Analyze ${symbol}. Price: ${curSym}${price} (${curCode}), RSI: ${rsi}, Sentiment: ${sentiment}. News: ${newsSummary}. 3 sentences technical and market verdict.` }],
+                messages: [{ role: "user", content: `Analyze ${symbol}. Price: ${curSym}${price} (${curCode}), RSI: ${rsi}, Sentiment: ${sentiment}. News: ${newsSummary}. Summarize the supplied indicators and headlines in three sentences. Keep observations tied to the supplied data and avoid price predictions or trading instructions.` }],
                 model: "llama-3.1-8b-instant",
             });
             analysisText = chatCompletion.choices[0].message.content;
         } catch (groqErr) {
             console.error("Groq API error:", groqErr.message);
-            const rsiNum = parseFloat(rsi) || 50;
+            source = "indicator";
+            const rsiNum = Number.parseFloat(rsi);
             const rsiVerdict = rsiNum > 65 ? "overbought momentum, signaling potential consolidation" : rsiNum < 35 ? "oversold conditions, indicating potential mean-reversion buying interest" : "balanced neutral momentum";
-            analysisText = `${symbol} is trading at ${curSym}${price} (${curCode}) within ${rsiVerdict} (RSI: ${rsi || '50.0'}). Current market sentiment stands at ${sentiment || 'Neutral'}. Quantitative risk models recommend confirming directional breakout with volume before placing order execution.`;
+            analysisText = Number.isFinite(rsiNum)
+                ? `RSI is ${rsiNum.toFixed(1)}. The indicator suggests ${rsiVerdict}. Headline sentiment: ${sentiment || 'unavailable'}.`
+                : 'RSI is unavailable. Load more price history to calculate momentum.';
         }
-        res.json({ analysis: analysisText });
+        res.json({ analysis: analysisText, source });
     } catch (error) { 
         res.status(500).json({ error: "AI Error", analysis: "Technical indicators show neutral price consolidation. Monitor moving average alignment." }); 
     }
 });
 
 // --- 7. C++ High-Performance Quantitative Computing Core ---
-const { PRESETS, runCppQuantEngine, computeAssetParameters } = require('./quant_service');
+const { PRESETS, runCppQuantEngine, computeAssetParameters, isPositiveSemidefinite } = require('./quant_service');
+
+const USD_QUOTED_FX = new Set(['EUR', 'GBP', 'AUD', 'NZD']);
+
+function loadQuantChart(symbol) {
+    return getOrLoad(`quant_chart_${symbol}`, 3600, async () => {
+        const start = new Date();
+        start.setUTCFullYear(start.getUTCFullYear() - 1);
+        const chart = await yahooFinance.chart(symbol, { period1: start, interval: '1d' }, { validateResult: false });
+        if (!chart?.quotes?.length) throw new Error('No historical prices available.');
+        return chart;
+    });
+}
+
+async function loadQuantUsdHistory(symbol) {
+    const chart = await loadQuantChart(symbol);
+    const currency = chart.meta?.currency;
+    const pence = currency === 'GBp' || currency === 'GBX';
+    const code = pence ? 'GBP' : currency;
+    if (!/^[A-Z]{3}$/.test(code)) throw new Error('Historical quote currency is unavailable.');
+
+    let fxByDate;
+    const usdQuoted = USD_QUOTED_FX.has(code);
+    if (code !== 'USD') {
+        const pair = usdQuoted ? `${code}USD=X` : `USD${code}=X`;
+        const fx = await loadQuantChart(pair);
+        fxByDate = new Map(fx.quotes.filter(bar => bar.date instanceof Date && Number.isFinite(bar.close) && bar.close > 0)
+            .map(bar => [bar.date.toISOString().slice(0, 10), usdQuoted ? bar.close : 1 / bar.close]));
+    }
+
+    return chart.quotes
+        .filter(bar => bar.date instanceof Date && Number.isFinite(bar.adjclose) && bar.adjclose > 0)
+        .map(bar => {
+            const datetime = bar.date.toISOString().slice(0, 10);
+            const usdRate = fxByDate ? fxByDate.get(datetime) : 1;
+            return { datetime, close: bar.adjclose * usdRate / (pence ? 100 : 1) };
+        });
+}
 
 app.get('/api/quant/presets', (req, res) => {
     res.json(PRESETS);
@@ -1578,120 +1460,115 @@ app.post('/api/quant/simulate', quantSimulationLimiter, quantConcurrencyLimit, a
             riskFreeRate = 0.045,
             expectedReturns,
             volatilities,
-            correlationMatrix
-        } = req.body;
+            correlationMatrix,
+            assumptionMode
+        } = req.body ?? {};
 
         if (!Array.isArray(symbols) || symbols.length < 1 || symbols.length > 50 || symbols.some(s => typeof s !== 'string' || !/^[A-Z0-9.^=_-]{1,24}$/i.test(s.trim()))) {
             return res.status(400).json({ error: 'Provide between 1 and 50 valid ticker symbols.' });
         }
-        if (!Array.isArray(weights) || weights.length !== symbols.length || weights.some(w => !Number.isFinite(Number(w)) || Number(w) < 0 || Number(w) > 1)) {
+        if (!Array.isArray(weights) || weights.length !== symbols.length || weights.some(w => !Number.isFinite(w) || Number(w) < 0 || Number(w) > 1)) {
             return res.status(400).json({ error: 'Weights must contain one value from 0 to 1 for each symbol.' });
         }
         const weightTotal = weights.reduce((sum, weight) => sum + Number(weight), 0);
         if (Math.abs(weightTotal - 1) > 0.02) {
             return res.status(400).json({ error: `Portfolio weights must total 100%; received ${(weightTotal * 100).toFixed(2)}%.` });
         }
-        const normalizedWeights = weights.map(w => Number((Number(w) / weightTotal).toFixed(6)));
+        const normalizedWeights = weights.map(weight => weight / weightTotal);
 
-        if (!Number.isFinite(Number(initialPortfolioValue)) || Number(initialPortfolioValue) <= 0) {
-            return res.status(400).json({ error: 'Initial portfolio value must be a positive number.' });
+        if (!Number.isFinite(initialPortfolioValue) || initialPortfolioValue <= 0 || initialPortfolioValue > 1e12) {
+            return res.status(400).json({ error: 'Initial portfolio value must be positive and at most 1 trillion USD.' });
         }
-        if (!Number.isFinite(Number(riskFreeRate)) || Number(riskFreeRate) < 0 || Number(riskFreeRate) > 1) {
+        if (!Number.isFinite(riskFreeRate) || Number(riskFreeRate) < 0 || Number(riskFreeRate) > 1) {
             return res.status(400).json({ error: 'Risk-free rate must be between 0 and 1.' });
         }
-        if (expectedReturns !== undefined && (!Array.isArray(expectedReturns) || expectedReturns.length !== symbols.length || expectedReturns.some(value => !Number.isFinite(Number(value)) || Number(value) < -2 || Number(value) > 2))) {
+        if (expectedReturns !== undefined && (!Array.isArray(expectedReturns) || expectedReturns.length !== symbols.length || expectedReturns.some(value => !Number.isFinite(value) || Number(value) < -2 || Number(value) > 2))) {
             return res.status(400).json({ error: 'Expected returns must contain one finite annual value between -2 and 2 for each symbol.' });
         }
-        if (volatilities !== undefined && (!Array.isArray(volatilities) || volatilities.length !== symbols.length || volatilities.some(value => !Number.isFinite(Number(value)) || Number(value) <= 0 || Number(value) > 3))) {
+        if (volatilities !== undefined && (!Array.isArray(volatilities) || volatilities.length !== symbols.length || volatilities.some(value => !Number.isFinite(value) || Number(value) <= 0 || Number(value) > 3))) {
             return res.status(400).json({ error: 'Volatilities must contain one positive annual value no greater than 3 for each symbol.' });
         }
-        if (correlationMatrix !== undefined && (!Array.isArray(correlationMatrix) || correlationMatrix.length !== symbols.length || correlationMatrix.some((row, i) => !Array.isArray(row) || row.length !== symbols.length || row.some((value, j) => !Number.isFinite(Number(value)) || Number(value) < -1 || Number(value) > 1 || (i === j && Math.abs(Number(value) - 1) > 0.0001))))) {
+        if (correlationMatrix !== undefined && (!Array.isArray(correlationMatrix) || correlationMatrix.length !== symbols.length || correlationMatrix.some((row, i) => !Array.isArray(row) || row.length !== symbols.length || row.some((value, j) => !Number.isFinite(value) || Number(value) < -1 || Number(value) > 1 || (i === j && Math.abs(Number(value) - 1) > 1e-10))))) {
             return res.status(400).json({ error: 'Correlation matrix must be square, finite, bounded from -1 to 1, and have ones on its diagonal.' });
         }
         if (correlationMatrix !== undefined && correlationMatrix.some((row, i) => row.some((value, j) => Math.abs(Number(value) - Number(correlationMatrix[j][i])) > 0.0001))) {
             return res.status(400).json({ error: 'Correlation matrix must be symmetric.' });
         }
 
-        let finalReturns = expectedReturns;
-        let finalVols = volatilities;
-        let finalCorr = correlationMatrix;
+        const cleanSymbols = symbols.map(symbol => symbol.trim().toUpperCase());
+        if (new Set(cleanSymbols).size !== cleanSymbols.length) {
+            return res.status(400).json({ error: 'Provide each ticker once and combine its weights.' });
+        }
+        const pathCount = Math.min(200000, Math.max(1000, parseInt(numSimulations, 10) || 50000));
+        const horizon = Math.min(365, Math.max(10, parseInt(timeHorizonDays, 10) || 90));
+        if (pathCount * horizon * cleanSymbols.length * (cleanSymbols.length + 1) / 2 > 1_100_000_000) {
+            return res.status(400).json({ error: 'Reduce the path count, horizon, or number of assets to run this simulation.' });
+        }
 
-        // If returns/vols are not provided, check known presets or fetch historical data in parallel
-        if (!finalReturns || !finalVols || !finalCorr) {
-            // Check if matches an institutional preset first (instant 0ms resolution)
-            const matchedPreset = Object.values(PRESETS).find(p => 
-                p.symbols.length === symbols.length && 
-                p.symbols.every((s, i) => s.toUpperCase() === symbols[i].toUpperCase())
-            );
-
-            if (matchedPreset && (!finalReturns || !finalVols)) {
-                finalReturns = finalReturns || matchedPreset.expectedReturns;
-                finalVols = finalVols || matchedPreset.volatilities;
+        const preset = assumptionMode !== 'historical' && Object.values(PRESETS).find(item =>
+            item.symbols.length === cleanSymbols.length && item.symbols.every((symbol, i) => symbol === cleanSymbols[i])
+        );
+        const scenario = preset && {
+            ...preset,
+            correlationMatrix: cleanSymbols.map((_, i) => cleanSymbols.map((_, j) => i === j ? 1 : 0.45))
+        };
+        const hasAllInputs = expectedReturns && volatilities && correlationMatrix;
+        let history;
+        if (!hasAllInputs && !scenario) {
+            const series = await Promise.all(cleanSymbols.map(symbol => loadQuantUsdHistory(symbol).catch(() => [])));
+            history = computeAssetParameters(Object.fromEntries(cleanSymbols.map((symbol, i) => [symbol, series[i]])), cleanSymbols);
+            if (!history) {
+                return res.status(422).json({ error: 'At least 15 common trading dates with adjusted prices and USD exchange rates are required.' });
             }
+        }
 
-            const historyMap = {};
-            await Promise.all(symbols.map(async (sym) => {
-                try {
-                    const cleanSym = sym.toUpperCase();
-                    const quantCacheKey = `quant_hist_${cleanSym}`;
-                    let cachedPrices = myCache.get(quantCacheKey);
-
-                    if (!cachedPrices) {
-                        const mainStock = myCache.get(`stock_${cleanSym}`);
-                        if (isValidCandleData(mainStock)) {
-                            cachedPrices = mainStock.values;
-                        } else {
-                            try {
-                                const yfData = await fetchFromYahoo(cleanSym);
-                                if (isValidCandleData(yfData)) {
-                                    myCache.set(`stock_${cleanSym}`, yfData, 300);
-                                    cachedPrices = yfData.values;
-                                }
-                            } catch (_) {}
-                        }
-
-                        if (cachedPrices) {
-                            myCache.set(quantCacheKey, cachedPrices, 3600);
-                        }
-                    }
-
-                    if (cachedPrices) {
-                        historyMap[sym] = cachedPrices;
-                    }
-                } catch (err) {
-                    // Fall back gracefully
-                }
-            }));
-
-            const computed = computeAssetParameters(historyMap, symbols);
-            finalReturns = finalReturns || computed.expectedReturns;
-            finalVols = finalVols || computed.volatilities;
-            finalCorr = finalCorr || computed.correlationMatrix;
+        const assumptions = scenario || history;
+        const finalReturns = expectedReturns ?? assumptions?.expectedReturns;
+        const finalVols = volatilities ?? assumptions?.volatilities;
+        const finalCorr = correlationMatrix ?? assumptions?.correlationMatrix;
+        if (!isPositiveSemidefinite(finalCorr)) {
+            return res.status(422).json({ error: 'The correlation matrix must be positive semidefinite.' });
         }
 
         const inputPayload = {
-            symbols,
+            symbols: cleanSymbols,
             weights: normalizedWeights,
-            numSimulations: Math.min(200000, Math.max(1000, parseInt(numSimulations) || 50000)),
-            timeHorizonDays: Math.min(365, Math.max(10, parseInt(timeHorizonDays) || 90)),
-            initialPortfolioValue: parseFloat(initialPortfolioValue) || 100000,
-            riskFreeRate: parseFloat(riskFreeRate) || 0.045,
+            numSimulations: pathCount,
+            timeHorizonDays: horizon,
+            initialPortfolioValue: Number(initialPortfolioValue),
+            riskFreeRate: Number(riskFreeRate),
             expectedReturns: finalReturns,
             volatilities: finalVols,
             correlationMatrix: finalCorr
         };
 
-        // Run C++ Engine
         const cppResult = await runCppQuantEngine(inputPayload);
 
         res.json({
             success: true,
             engineMode: 'cloud',
             cpp: cppResult,
+            assumptions: {
+                currency: 'USD',
+                symbols: cleanSymbols,
+                weights: normalizedWeights,
+                expectedReturns: finalReturns,
+                volatilities: finalVols,
+                correlationMatrix: finalCorr,
+                riskFreeRate: inputPayload.riskFreeRate,
+                sources: {
+                    expectedReturns: expectedReturns ? 'supplied' : preset ? 'preset' : 'history',
+                    volatilities: volatilities ? 'supplied' : preset ? 'preset' : 'history',
+                    correlationMatrix: correlationMatrix ? 'supplied' : preset ? 'preset' : 'history'
+                },
+                history: history && { source: 'Yahoo Finance', observations: history.sampleCount, from: history.from, to: history.to }
+            }
         });
     } catch (error) {
         console.error("Quant Simulation Error:", error);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: "The simulation engine could not complete this request." });
+    } finally {
+        res.locals.releaseQuantSlot();
     }
 });
 

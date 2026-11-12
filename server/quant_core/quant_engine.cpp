@@ -19,6 +19,7 @@
 #include <random>
 #include <chrono>
 #include <iomanip>
+#include <stdexcept>
 #include <omp.h>
 
 // Simple minimal JSON writer helper
@@ -122,6 +123,7 @@ struct FastRng {
 // Cholesky decomposition: A = L * L^T where A is positive semi-definite correlation/covariance matrix
 std::vector<std::vector<double>> choleskyDecomposition(const std::vector<std::vector<double>>& matrix, int n) {
     std::vector<std::vector<double>> L(n, std::vector<double>(n, 0.0));
+    constexpr double tolerance = 1e-10;
     for (int i = 0; i < n; i++) {
         for (int j = 0; j <= i; j++) {
             double sum = 0.0;
@@ -130,9 +132,15 @@ std::vector<std::vector<double>> choleskyDecomposition(const std::vector<std::ve
             }
             if (i == j) {
                 double val = matrix[i][i] - sum;
-                L[i][j] = (val > 1e-12) ? std::sqrt(val) : 0.0;
+                if (val < -tolerance) throw std::invalid_argument("Correlation matrix must be positive semidefinite.");
+                L[i][j] = (val > tolerance) ? std::sqrt(val) : 0.0;
             } else {
-                L[i][j] = (L[j][j] > 1e-12) ? (matrix[i][j] - sum) / L[j][j] : 0.0;
+                double residual = matrix[i][j] - sum;
+                if (L[j][j] > 0) {
+                    L[i][j] = residual / L[j][j];
+                } else if (std::abs(residual) > tolerance) {
+                    throw std::invalid_argument("Correlation matrix must be positive semidefinite.");
+                }
             }
         }
     }
@@ -228,7 +236,12 @@ SimInput parseInputJson(const std::string& json) {
             size_t end = arrStr.find_first_of(",]", p);
             if (end == std::string::npos) end = arrStr.length();
             std::string tok = arrStr.substr(p, end - p);
-            res.push_back(parseDoubleSafe(tok, 0.0));
+            size_t consumed;
+            double value = std::stod(tok, &consumed);
+            if (!std::isfinite(value) || tok.find_first_not_of(" \t\r\n", consumed) != std::string::npos) {
+                throw std::invalid_argument("Expected a finite numeric array value.");
+            }
+            res.push_back(value);
             p = (end < arrStr.length() && arrStr[end] == ',') ? end + 1 : end;
         }
         return res;
@@ -275,10 +288,22 @@ SimInput parseInputJson(const std::string& json) {
         }
     }
 
-    // Default correlation matrix if not supplied or invalid
-    if (in.correlationMatrix.size() != n) {
+    if (corrStr.empty()) {
         in.correlationMatrix.assign(n, std::vector<double>(n, 0.45));
         for (size_t i = 0; i < n; i++) in.correlationMatrix[i][i] = 1.0;
+    }
+    if (in.correlationMatrix.size() != n || std::any_of(in.correlationMatrix.begin(), in.correlationMatrix.end(),
+        [n](const auto& row) { return row.size() != n; })) {
+        throw std::invalid_argument("Correlation matrix must contain one row and column per asset.");
+    }
+    for (size_t i = 0; i < n; i++) {
+        for (size_t j = 0; j < n; j++) {
+            double value = in.correlationMatrix[i][j];
+            if (std::abs(value) > 1 || std::abs(value - in.correlationMatrix[j][i]) > 1e-10 ||
+                (i == j && std::abs(value - 1) > 1e-10)) {
+                throw std::invalid_argument("Invalid correlation matrix.");
+            }
+        }
     }
 
     return in;
@@ -389,7 +414,15 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    SimInput in = parseInputJson(inputJson);
+    SimInput in;
+    std::vector<std::vector<double>> L;
+    try {
+        in = parseInputJson(inputJson);
+        L = choleskyDecomposition(in.correlationMatrix, in.symbols.size());
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
     int n = in.symbols.size();
     int M = in.numSimulations;
     int T = in.timeHorizonDays;
@@ -404,9 +437,6 @@ int main(int argc, char* argv[]) {
             covMatrix[i][j] = in.correlationMatrix[i][j] * in.volatilities[i] * in.volatilities[j];
         }
     }
-
-    // 2. Cholesky Decomposition of correlation matrix for correlated shocks
-    std::vector<std::vector<double>> L = choleskyDecomposition(in.correlationMatrix, n);
 
     // 3. Compute baseline current portfolio expected return and volatility
     double currentPortReturn = 0.0;

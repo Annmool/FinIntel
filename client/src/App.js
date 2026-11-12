@@ -52,6 +52,9 @@ import { API_URL } from './apiConfig';
 const UPTIMEROBOT_STATUS_URL = 'https://dashboard.uptimerobot.com/monitors/803125214';
 
 function App() {
+  const pendingPaperOrder = useRef(null);
+  const submittingOrder = useRef(false);
+  const stockRequest = useRef(0);
   const [user, setUser] = useState(null);
   const [symbol, setSymbol] = useState('');
   const [suggestions, setSuggestions] = useState([]);
@@ -63,7 +66,6 @@ function App() {
   const [alerts, setAlerts] = useState([]);
   const [theme, setTheme] = useState('dark');
   const [briefing, setBriefing] = useState([]);
-  const [briefingPredictions, setBriefingPredictions] = useState(null);
   const [loading, setLoading] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
@@ -89,6 +91,7 @@ function App() {
   });
   const [activeTab, setActiveTab] = useState('overview'); // 'overview' | 'markets' | 'portfolio' | 'screener' | 'academy'
   const [portfolioPrices, setPortfolioPrices] = useState({});
+  const [portfolioFxRates, setPortfolioFxRates] = useState({});
   const [fxRate, setFxRate] = useState(() => {
     try {
       const cached = localStorage.getItem('finintel_fx_rate');
@@ -191,6 +194,7 @@ function App() {
             return merged;
           });
         }
+        setPortfolioFxRates(res.data?.providerRates || {});
         const sourceTimestamp = res.data?.sourceUpdatedAt;
         const providerTime = sourceTimestamp ? new Date(sourceTimestamp) : null;
         setFxLastUpdated(providerTime && Number.isFinite(providerTime.getTime()) ? providerTime : null);
@@ -205,11 +209,12 @@ function App() {
           localStorage.setItem('finintel_fx_provider', source);
           localStorage.setItem('finintel_fx_cached', String(cached));
         } catch (e) {}
-        if (force) {
-          showToast(`Forex synchronized: 1 USD = ₹${(rateVal || fxRate).toFixed(2)}`);
+        if (force && Number.isFinite(rateVal) && rateVal > 0) {
+          showToast(`Forex synchronized: 1 USD = ₹${rateVal.toFixed(2)}`);
         }
       })
       .catch(() => {
+        setPortfolioFxRates({});
         if (force) {
           showToast('Using local exchange rates (backend connecting...)', 'error');
         }
@@ -217,83 +222,81 @@ function App() {
       .finally(() => {
         setIsFxLoading(false);
       });
-  }, [fxRate]);
+  }, []);
 
   const fetchVirtualBalance = async (uid) => {
     try {
       const res = await axios.get(`${API_URL}/api/virtual-account/${uid}`);
-      setVirtualBalance(res.data.balance);
+      if (auth.currentUser?.uid === uid) setVirtualBalance(res.data.balance);
     } catch (e) {
       console.error('Error fetching balance');
     }
   };
 
-  const fetchPaperPortfolio = async (uid) => {
+  const fetchPortfolioMarks = useCallback((holdings, uid) => {
+    for (const symbol of new Set(holdings.map(holding => holding.symbol))) {
+      axios.get(`${API_URL}/api/stock/${encodeURIComponent(symbol)}`).then(({ data }) => {
+        if (auth.currentUser?.uid !== uid) return;
+        const candle = data?.values?.[0];
+        const price = Number(candle?.close);
+        const currency = data?.meta?.currency;
+        if (!Number.isFinite(price) || price <= 0 || !currency) return;
+        setPortfolioPrices(previous => ({ ...previous, [symbol]: { price, currency, date: candle.datetime } }));
+      }).catch(() => {});
+    }
+  }, []);
+
+  const fetchPaperPortfolio = useCallback(async (uid) => {
     try {
-      const res = await axios.get(`${API_URL}/api/paper-portfolio/${uid}`);
-      setPaperPortfolio(res.data);
-      if (res.data && res.data.length > 0) {
-        const uniqueSymbols = [...new Set(res.data.map(p => p.symbol))];
-        uniqueSymbols.forEach(async (s) => {
-          try {
-            const pRes = await axios.get(`${API_URL}/api/stock/${s}`);
-            if (pRes.data && pRes.data.values && pRes.data.values.length > 0) {
-              setPortfolioPrices(prev => ({ ...prev, [s]: parseFloat(pRes.data.values[0].close) }));
-            }
-          } catch (_) {}
-        });
-      }
+      const { data } = await axios.get(`${API_URL}/api/paper-portfolio/${uid}`);
+      if (auth.currentUser?.uid !== uid) return;
+      setPaperPortfolio(data);
+      fetchPortfolioMarks(data, uid);
     } catch (e) {}
-  };
+  }, [fetchPortfolioMarks]);
 
   const fetchWatchlist = async (uid) => {
     try {
       const res = await axios.get(`${API_URL}/api/watchlist/${uid}`);
-      setWatchlist(res.data);
+      if (auth.currentUser?.uid === uid) setWatchlist(res.data);
     } catch (e) {}
   };
 
-  const fetchPortfolio = async (uid) => {
+  const fetchPortfolio = useCallback(async (uid) => {
     try {
-      const res = await axios.get(`${API_URL}/api/portfolio/${uid}`);
-      setPortfolio(res.data);
-      // Fetch prices for holdings to calculate real-time portfolio metrics
-      if (res.data && res.data.length > 0) {
-        const uniqueSymbols = [...new Set(res.data.map(p => p.symbol))];
-        uniqueSymbols.forEach(async (s) => {
-          try {
-            const pRes = await axios.get(`${API_URL}/api/stock/${s}`);
-            if (pRes.data && pRes.data.values && pRes.data.values.length > 0) {
-              setPortfolioPrices(prev => ({ ...prev, [s]: parseFloat(pRes.data.values[0].close) }));
-            }
-          } catch (_) {}
-        });
-      }
+      const { data } = await axios.get(`${API_URL}/api/portfolio/${uid}`);
+      if (auth.currentUser?.uid !== uid) return;
+      setPortfolio(data);
+      fetchPortfolioMarks(data, uid);
     } catch (e) {}
-  };
+  }, [fetchPortfolioMarks]);
 
   const fetchAlerts = async (uid) => {
     try {
       const res = await axios.get(`${API_URL}/api/alerts/${uid}`);
-      setAlerts(res.data);
+      if (auth.currentUser?.uid === uid) setAlerts(res.data);
     } catch (e) {}
   };
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
+      setWatchlist([]);
+      setPortfolio([]);
+      setPaperPortfolio([]);
+      setAlerts([]);
+      setPortfolioPrices({});
+      setVirtualBalance(100000);
       if (u) {
         fetchWatchlist(u.uid);
         fetchPortfolio(u.uid);
         fetchPaperPortfolio(u.uid);
         fetchAlerts(u.uid);
         fetchVirtualBalance(u.uid);
-      } else {
-        setWatchlist([]);
-        setPortfolio([]);
-        setPaperPortfolio([]);
-        setAlerts([]);
       }
     });
 
@@ -304,7 +307,6 @@ function App() {
             setBriefing(res.data);
           } else if (res.data && res.data.news) {
             setBriefing(res.data.news);
-            setBriefingPredictions(res.data.predictions);
           }
         })
         .catch(() => {});
@@ -315,13 +317,17 @@ function App() {
 
     fetchBriefing();
     const briefingInterval = setInterval(fetchBriefing, 5 * 60 * 1000);
+    const alertsInterval = setInterval(() => {
+      if (auth.currentUser) fetchAlerts(auth.currentUser.uid);
+    }, 60 * 1000);
 
     return () => {
       unsubscribe();
       clearInterval(briefingInterval);
+      clearInterval(alertsInterval);
       clearInterval(fxInterval);
     };
-  }, [theme, fetchFxRate]);
+  }, [fetchFxRate, fetchPaperPortfolio, fetchPortfolio]);
 
   // Autocomplete Logic
   useEffect(() => {
@@ -332,25 +338,27 @@ function App() {
       return;
     }
 
+    const controller = new AbortController();
     const timer = setTimeout(() => {
-      axios.get(`${API_URL}/api/search/${encodeURIComponent(query)}`)
+      axios.get(`${API_URL}/api/search/${encodeURIComponent(query)}`, { signal: controller.signal })
         .then(res => {
-          if (Array.isArray(res.data)) {
+          if (!controller.signal.aborted && Array.isArray(res.data)) {
             setSuggestions(res.data);
             setSelectedSuggestionIndex(-1);
           }
         })
         .catch(() => {
-          setSuggestions([]);
+          if (!controller.signal.aborted) setSuggestions([]);
         });
     }, 220);
 
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); controller.abort(); };
   }, [symbol, showSuggestions]);
 
   const fetchStockData = async (s) => {
     let sym = (s || symbol)?.trim();
     if (!sym) return;
+    const requestId = ++stockRequest.current;
     setShowSuggestions(false);
     setSuggestions([]);
     setLoading(true);
@@ -378,6 +386,7 @@ function App() {
           throw new Error("Invalid or empty stock data");
         }
       } catch (directErr) {
+        if (requestId !== stockRequest.current) return;
         // If symbol lookup fails (e.g. user entered "APPLE" instead of "AAPL"), try smart-resolving symbol via search
         try {
           const searchRes = await axios.get(`${API_URL}/api/search/${encodeURIComponent(targetSym)}`);
@@ -396,6 +405,7 @@ function App() {
         }
       }
 
+      if (requestId !== stockRequest.current) return;
       setSymbol(targetSym);
 
       if (
@@ -423,6 +433,7 @@ function App() {
       }
       setNews(Array.isArray(newsRes.data) ? newsRes.data : []);
     } catch (e) {
+      if (requestId !== stockRequest.current) return;
       setAppError(`Market data service error for ${sym.toUpperCase()}. Reverting to overview.`);
       setData(null);
     }
@@ -527,6 +538,7 @@ function App() {
   };
 
   const executeModalOrder = async () => {
+    if (submittingOrder.current) return;
     let currUser = user;
     if (!currUser) {
       try {
@@ -539,43 +551,33 @@ function App() {
     }
     if (!currUser) return;
 
+    if (submittingOrder.current) return;
+    submittingOrder.current = true;
     setOrderModal(prev => ({ ...prev, isSubmitting: true, error: '' }));
 
     try {
-      if (orderModal.type === 'BUY') {
-        const qty = parseFloat(orderModal.qty);
-        if (!qty || qty <= 0) {
-          setOrderModal(prev => ({ ...prev, isSubmitting: false, error: 'Please enter a valid share quantity.' }));
-          return;
+      if (orderModal.type === 'BUY' || orderModal.type === 'SELL') {
+        const qty = Number(orderModal.qty);
+        if (!Number.isFinite(qty) || qty <= 0) throw new Error('Please enter a valid share quantity.');
+
+        const side = orderModal.type.toLowerCase();
+        const signature = JSON.stringify([currUser.uid, side, orderModal.symbol, qty]);
+        if (pendingPaperOrder.current?.signature !== signature) {
+          pendingPaperOrder.current = { signature, id: crypto.randomUUID() };
         }
-        const res = await axios.post(`${API_URL}/api/paper-portfolio/buy`, {
-          userId: currUser.uid,
+        const { data: fill } = await axios.post(`${API_URL}/api/paper-portfolio/${side}`, {
           symbol: orderModal.symbol,
           qty,
-          price: orderModal.price,
-          currency: orderModal.currency
+          orderId: pendingPaperOrder.current.id
         });
-        setVirtualBalance(res.data.balance);
-        fetchPaperPortfolio(currUser.uid);
-        setOrderModal(prev => ({ ...prev, isOpen: false, isSubmitting: false }));
-        showToast(`Bought ${qty} ${orderModal.symbol} @ ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource || 'Live'})`);
-      } else if (orderModal.type === 'SELL') {
-        const qty = parseFloat(orderModal.qty);
-        if (!qty || qty <= 0) {
-          setOrderModal(prev => ({ ...prev, isSubmitting: false, error: 'Please enter a valid share quantity.' }));
-          return;
+        pendingPaperOrder.current = null;
+        if (auth.currentUser?.uid === currUser.uid) {
+          fetchVirtualBalance(currUser.uid);
+          fetchPaperPortfolio(currUser.uid);
         }
-        const res = await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
-          userId: currUser.uid,
-          symbol: orderModal.symbol,
-          qty,
-          price: orderModal.price,
-          currency: orderModal.currency
-        });
-        setVirtualBalance(res.data.balance);
-        fetchPaperPortfolio(currUser.uid);
         setOrderModal(prev => ({ ...prev, isOpen: false, isSubmitting: false }));
-        showToast(`Sold ${qty} ${orderModal.symbol} @ ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource || 'Live'})`);
+        const verb = side === 'buy' ? 'Bought' : 'Sold';
+        showToast(`${verb} ${qty} ${orderModal.symbol} @ ${getCurrencySymbol(fill.currency)}${formatPrice(fill.executedPrice, fill.currency)} (${fill.quoteSource})`);
       } else if (orderModal.type === 'PORTFOLIO') {
         const qty = parseFloat(orderModal.qty);
         if (!qty || qty <= 0) {
@@ -610,6 +612,8 @@ function App() {
     } catch (err) {
       const errorMsg = err.response?.data?.error || err.message || 'Order execution failed.';
       setOrderModal(prev => ({ ...prev, isSubmitting: false, error: errorMsg }));
+    } finally {
+      submittingOrder.current = false;
     }
   };
 
@@ -622,10 +626,10 @@ function App() {
         price: data?.values[0].close,
         currency: stockCur,
         rsi: calculateRSI(data.values),
-        sentiment: avgSent > 0 ? 'Bullish' : 'Bearish',
+        sentiment: !news.length ? 'Unavailable' : avgSent === 0 ? 'Neutral' : avgSent > 0 ? 'Bullish' : 'Bearish',
         news: news
       });
-      setAiAnalysis(res.data.analysis);
+      setAiAnalysis((res.data.source === 'indicator' ? 'Indicator summary · ' : 'AI-generated summary · ') + res.data.analysis);
     } catch (e) {
       setAiAnalysis('Analysis generation failed. Check API connectivity.');
     }
@@ -647,17 +651,17 @@ function App() {
     const nativeCurrency = p.currency || inferCurrencyFromSymbol(p.symbol);
     const nativeSymbol = getCurrencySymbol(nativeCurrency);
 
-    const currPrice = portfolioPrices[p.symbol] || parseFloat(p.price || 0);
+    const currPrice = portfolioPrices[p.symbol]?.price ?? NaN;
     const entryPrice = parseFloat(p.price || 0);
 
     const costBasisNative = p.qty * entryPrice;
     const currentValNative = p.qty * currPrice;
     const pnlNative = currentValNative - costBasisNative;
-    const pnlPercent = costBasisNative > 0 ? (pnlNative / costBasisNative) * 100 : 0;
+    const pnlPercent = costBasisNative > 0 ? (pnlNative / costBasisNative) * 100 : NaN;
 
     // Convert values to both USD and INR using the global FX engine
-    const currentValUSD = convertPrice(currentValNative, nativeCurrency, 'USD', fxRates);
-    const currentValINR = convertPrice(currentValNative, nativeCurrency, 'INR', fxRates);
+    const currentValUSD = Number.isFinite(currPrice) ? convertPrice(currentValNative, nativeCurrency, 'USD', fxRates) : NaN;
+    const currentValINR = Number.isFinite(currPrice) ? convertPrice(currentValNative, nativeCurrency, 'INR', fxRates) : NaN;
     const costBasisUSD = convertPrice(costBasisNative, nativeCurrency, 'USD', fxRates);
     const costBasisINR = convertPrice(costBasisNative, nativeCurrency, 'INR', fxRates);
     const pnlUSD = currentValUSD - costBasisUSD;
@@ -698,7 +702,7 @@ function App() {
   const totalUnrealizedPnLPercent = totalCostBasis > 0 ? (totalUnrealizedPnL / totalCostBasis) * 100 : 0;
 
   // Secondary alternative currency representation
-  const totalPortfolioValueAlt = convertPrice(totalPortfolioValue, baseCurrency, altCurrency, fxRates);
+  const totalPortfolioValueAlt = Number.isFinite(totalPortfolioValue) ? convertPrice(totalPortfolioValue, baseCurrency, altCurrency, fxRates) : NaN;
   const virtualBalanceBase = convertPrice(virtualBalance, 'USD', baseCurrency, fxRates);
 
   // Export Portfolio
@@ -718,7 +722,7 @@ function App() {
         `${p.nativeSymbol}${formatPrice(p.currPrice, p.nativeCurrency)}`,
         `${p.nativeSymbol}${formatPrice(p.currentValNative, p.nativeCurrency)}`,
         `${baseCurSymbol}${formatPrice(p.currentValBase, baseCurrency)}`,
-        `${p.pnlNative >= 0 ? '+' : ''}${p.nativeSymbol}${formatPrice(p.pnlNative, p.nativeCurrency)} (${p.pnlPercent.toFixed(1)}%)`
+        `${p.pnlNative >= 0 ? '+' : ''}${p.nativeSymbol}${formatPrice(p.pnlNative, p.nativeCurrency)} (${formatPrice(p.pnlPercent, p.nativeCurrency, { minDecimals: 1, maxDecimals: 1 })}%)`
       ]);
 
       if (type === 'csv') {
@@ -736,7 +740,7 @@ function App() {
         doc.setFontSize(14);
         doc.text(`FinIntel — Institutional Portfolio Statement (${baseCurrency})`, 14, 15);
         doc.setFontSize(9);
-        doc.text(`Generated: ${new Date().toUTCString()} | Valuation: ${baseCurSymbol}${totalPortfolioValue.toFixed(2)} | FX: 1 USD = ₹${fxRate.toFixed(2)}`, 14, 22);
+        doc.text(`Generated: ${new Date().toUTCString()} | Valuation: ${baseCurSymbol}${formatPrice(totalPortfolioValue, baseCurrency)} | FX: 1 USD = ₹${fxRate.toFixed(2)}`, 14, 22);
         autoTable(doc, {
           head: [headers],
           body: rows,
@@ -950,7 +954,7 @@ function App() {
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <span className="sidebar-item-sym" style={{ fontSize: '0.78rem' }}>{a.symbol}</span>
                   <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>
-                    {a.condition} {getCurrency(a.symbol)}{formatPrice(a.targetPrice, a.symbol)}
+                    {a.condition} {getCurrency(a.symbol)}{formatPrice(a.targetPrice, a.symbol)} · {a.triggered ? 'Triggered' : 'Watching'}
                   </span>
                 </div>
                 <button
@@ -1161,50 +1165,6 @@ function App() {
                 </div>
               </div>
 
-              {/* Structured Directional Catalyst Synthesis Box */}
-              {(() => {
-                if (!briefingPredictions) return null;
-                const higher = Array.isArray(briefingPredictions.higher) ? briefingPredictions.higher.filter(h => h && h.symbol) : [];
-                const lower = Array.isArray(briefingPredictions.lower) ? briefingPredictions.lower.filter(l => l && l.symbol) : [];
-                if (higher.length === 0 && lower.length === 0) return null;
-
-                return (
-                  <div className="quant-synthesis-box">
-                    <div className="quant-synthesis-header">
-                      <Cpu size={14} color="var(--accent)" />
-                      <span>Quantitative Directional Catalysts (Extracted from Live Wire)</span>
-                    </div>
-                    <div className="quant-catalyst-grid">
-                      {higher.length > 0 && (
-                        <div className="catalyst-col">
-                          <span className="catalyst-col-title pos">▲ Bullish Biases & Catalysts</span>
-                          <div className="catalyst-items">
-                            {higher.map((h, idx) => (
-                              <div key={idx} className="catalyst-item" onClick={() => fetchStockData(h.symbol)}>
-                                <span className="font-mono catalyst-sym pos">{h.symbol}</span>
-                                <span className="catalyst-reason">{h.reason}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {lower.length > 0 && (
-                        <div className="catalyst-col">
-                          <span className="catalyst-col-title neg">▼ Bearish Headwinds & Risks</span>
-                          <div className="catalyst-items">
-                            {lower.map((l, idx) => (
-                              <div key={idx} className="catalyst-item" onClick={() => fetchStockData(l.symbol)}>
-                                <span className="font-mono catalyst-sym neg">{l.symbol}</span>
-                                <span className="catalyst-reason">{l.reason}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
 
               {/* News Articles Grid */}
               <div className="news-feed-grid">
@@ -1362,7 +1322,7 @@ function App() {
                     </button>
                   </div>
                   <p className="analyst-body">
-                    {aiAnalysis || 'Execute synthesis to generate a 3-point technical and sentiment verdict for ' + (data?.meta?.symbol || symbol) + ' based on live order momentum and news filings.'}
+                    {aiAnalysis || 'Summarize the displayed indicators and recent headlines.'}
                   </p>
                 </div>
 
@@ -1418,14 +1378,16 @@ function App() {
                   <div className="summary-metric-card">
                     <span className="summary-metric-label">Portfolio Valuation ({baseCurrency})</span>
                     <span className="summary-metric-value">
-                      {baseCurSymbol}{totalPortfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {baseCurSymbol}{formatPrice(totalPortfolioValue, baseCurrency)}
                     </span>
-                    <span className={`summary-metric-sub ${totalUnrealizedPnL >= 0 ? 'pos' : 'neg'}`}>
-                      {totalUnrealizedPnL >= 0 ? '+' : ''}{baseCurSymbol}{totalUnrealizedPnL.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({totalUnrealizedPnLPercent.toFixed(1)}% All-Time)
-                    </span>
-                    {portfolio.length > 0 && (
+                    {Number.isFinite(totalUnrealizedPnL) ? (
+                      <span className={`summary-metric-sub ${totalUnrealizedPnL >= 0 ? 'pos' : 'neg'}`}>
+                        {totalUnrealizedPnL >= 0 ? '+' : ''}{baseCurSymbol}{formatPrice(totalUnrealizedPnL, baseCurrency)} ({totalUnrealizedPnLPercent.toFixed(1)}% unrealized)
+                      </span>
+                    ) : <span className="summary-metric-sub">Waiting for one or more quotes</span>}
+                    {portfolio.length > 0 && Number.isFinite(totalPortfolioValueAlt) && (
                       <span className="font-mono" style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                        ≈ {altCurSymbol}{totalPortfolioValueAlt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {altCurrency}
+                        ≈ {altCurSymbol}{formatPrice(totalPortfolioValueAlt, altCurrency)} {altCurrency}
                       </span>
                     )}
                   </div>
@@ -1583,10 +1545,12 @@ function App() {
                                 )}
                               </td>
                               <td className="num-col font-mono">
-                                <span className={`term-badge ${isPos ? 'pos' : 'neg'}`}>
-                                  {isPos ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                                  {isPos ? '+' : ''}{p.nativeSymbol}{formatPrice(Math.abs(p.pnlNative), p.nativeCurrency)} ({p.pnlPercent.toFixed(1)}%)
-                                </span>
+                                {Number.isFinite(p.pnlNative) ? (
+                                  <span className={`term-badge ${isPos ? 'pos' : 'neg'}`}>
+                                    {isPos ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+                                    {isPos ? '+' : ''}{p.nativeSymbol}{formatPrice(Math.abs(p.pnlNative), p.nativeCurrency)} ({formatPrice(p.pnlPercent, p.nativeCurrency, { minDecimals: 1, maxDecimals: 1 })}%)
+                                  </span>
+                                ) : '—'}
                               </td>
                               <td style={{ textAlign: 'right' }}>
                                 <div style={{ display: 'inline-flex', gap: '4px' }}>
@@ -1686,50 +1650,6 @@ function App() {
                   <span className="term-badge neutral">CNBC Wire</span>
                 </div>
 
-                {/* Structured Directional Catalyst Synthesis (Groq LLaMA) */}
-                {(() => {
-                  if (!briefingPredictions) return null;
-                  const higher = Array.isArray(briefingPredictions.higher) ? briefingPredictions.higher.filter(h => h && h.symbol) : [];
-                  const lower = Array.isArray(briefingPredictions.lower) ? briefingPredictions.lower.filter(l => l && l.symbol) : [];
-                  if (higher.length === 0 && lower.length === 0) return null;
-
-                  return (
-                    <div className="quant-synthesis-box">
-                      <div className="quant-synthesis-header">
-                        <Cpu size={13} color="var(--accent)" />
-                        <span>Directional Catalyst Synthesis (Groq LLaMA)</span>
-                      </div>
-                      <div className="quant-catalyst-grid">
-                        {higher.length > 0 && (
-                          <div className="catalyst-col">
-                            <span className="catalyst-col-title pos">▲ Bullish Biases</span>
-                            <div className="catalyst-items">
-                              {higher.map((h, idx) => (
-                                <div key={idx} className="catalyst-item" onClick={() => fetchStockData(h.symbol)}>
-                                  <span className="font-mono catalyst-sym pos">{h.symbol}</span>
-                                  <span className="catalyst-reason">{h.reason}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        {lower.length > 0 && (
-                          <div className="catalyst-col">
-                            <span className="catalyst-col-title neg">▼ Bearish Headwinds</span>
-                            <div className="catalyst-items">
-                              {lower.map((l, idx) => (
-                                <div key={idx} className="catalyst-item" onClick={() => fetchStockData(l.symbol)}>
-                                  <span className="font-mono catalyst-sym neg">{l.symbol}</span>
-                                  <span className="catalyst-reason">{l.reason}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()}
 
                 {briefing.length > 0 ? (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -1804,22 +1724,17 @@ function App() {
                             <td style={{ textAlign: 'right' }}>
                                 <button
                                 className="btn btn-danger btn-sm"
-                                onClick={async () => {
-                                  try {
-                                    const res = await axios.post(`${API_URL}/api/paper-portfolio/sell`, {
-                                      userId: user.uid,
-                                      symbol: p.symbol,
-                                      qty: p.qty,
-                                      price: p.price,
-                                      currency: p.currency
-                                    });
-                                    fetchPaperPortfolio(user.uid);
-                                    fetchVirtualBalance(user.uid);
-                                    showToast(`Closed ${p.symbol} at ${getCurrencySymbol(res.data.currency)}${formatPrice(res.data.executedPrice, res.data.currency)} (${res.data.quoteSource || 'Live'})`);
-                                  } catch (err) {
-                                    showToast(err.response?.data?.error || 'Failed to close position', 'error');
-                                  }
-                                }}
+                                onClick={() => setOrderModal({
+                                  isOpen: true,
+                                  type: 'SELL',
+                                  symbol: p.symbol,
+                                  price: portfolioPrices[p.symbol]?.price ?? p.price,
+                                  currency: p.currency || inferCurrencyFromSymbol(p.symbol),
+                                  sharesHeld: p.qty,
+                                  qty: p.qty,
+                                  isSubmitting: false,
+                                  error: ''
+                                })}
                               >
                                 Close
                               </button>
@@ -2037,9 +1952,10 @@ function App() {
                         ${Math.max(0, remainingCash).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                       </span>
                     </div>
+                    <p className="order-calc-label">The fill uses a recent server-verified quote.</p>
                     {isInsufficient && (
                       <div className="order-validation-msg neg">
-                        ⚠️ Insufficient virtual capital. Need ${totalUsd.toFixed(2)} USD.
+                        ⚠️ Estimated cost exceeds available cash. Estimated total: ${totalUsd.toFixed(2)} USD.
                       </div>
                     )}
                     {isOverSelling && (
@@ -2075,7 +1991,6 @@ function App() {
                   orderModal.isSubmitting ||
                   (orderModal.type === 'ALERT' && (!parseFloat(orderModal.targetPrice) || parseFloat(orderModal.targetPrice) <= 0)) ||
                   (orderModal.type !== 'ALERT' && (!parseFloat(orderModal.qty) || parseFloat(orderModal.qty) <= 0)) ||
-                  (orderModal.type === 'BUY' && convertPrice((parseFloat(orderModal.qty) || 0) * orderModal.price, orderModal.currency, 'USD', fxRates) > virtualBalance) ||
                   (orderModal.type === 'SELL' && (parseFloat(orderModal.qty) || 0) > orderModal.sharesHeld)
                 }
                 onClick={executeModalOrder}
@@ -2107,6 +2022,8 @@ function App() {
           onClose={() => setIsQuantLabOpen(false)}
           userPortfolio={portfolio}
           paperPortfolio={paperPortfolio}
+          portfolioPrices={portfolioPrices}
+          fxRates={portfolioFxRates}
         />
       )}
 

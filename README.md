@@ -7,15 +7,15 @@ FinIntel is a full-stack investing dashboard and portfolio analytics project. It
 ## 🚀 Key Features
 
 - **C++20 Quantitative Computing Core**:
-  - **Multi-Asset Monte Carlo Simulation**: Simulates up to 250,000 portfolio trajectories across correlated assets using Geometric Brownian Motion (GBM) with Cholesky decomposition.
+  - **Multi-Asset Monte Carlo Simulation**: Simulates up to 200,000 portfolio trajectories, subject to a workload limit based on asset count and horizon.
   - Simulates multi-asset price paths using geometric Brownian motion and correlated random inputs.
   - Computes VaR, CVaR, drawdown summaries, and portfolio frontier candidates for the supplied assumptions.
   - Reports runtime and throughput for the selected engine; measurements depend on hardware, inputs, and build configuration. JavaScript fallback timings are not a like-for-like comparison with the native engine.
 - **Market Data**: Search supported stocks, view ticker quotes and charts, and see provider and update-time details for currency rates. Provider data may be delayed or differ across sources.
-- **AI Market Analyst**: Leverages LLaMA (via Groq) to provide daily morning briefings, analyze news sentiment, and generate actionable technical insights.
-- **Paper Trading Simulator**: Practice trading risk-free with virtual accounts and real-time P&L tracking.
+- **Market Briefing and AI Summaries**: Read sourced headlines and request an AI summary of the indicators and news shown for a stock.
+- **Paper Trading Simulator**: Practice with a virtual USD account and fills based on recent verified market quotes.
 - **Real Portfolio Management**: Track actual holdings with real-time profit/loss calculations and export reports to **CSV** or **PDF**.
-- **Automated Price Alerts**: Background cron jobs tracking target prices.
+- **Price Triggers**: A background job checks targets and records their status for display in the dashboard.
 - **Stock Screener**: Discover new investment opportunities based on fundamental and technical metrics.
 
 ---
@@ -93,7 +93,15 @@ The backend verifies Firebase ID tokens on all user-data routes. Set
 Firebase project. Token signature verification uses Google's public signing
 certificates, so a Firebase service account key is not required.
 Paper trading uses MongoDB transactions; use MongoDB Atlas or another replica
-set deployment rather than a standalone MongoDB server.
+set deployment. Paper buy and sell requests require an `orderId`. Retry the
+same order with the same ID. Partial orders support up to four decimal places
+and must settle to at least one USD cent. Full closes also support legacy
+positions with higher precision when the proceeds meet the minimum.
+
+Quant Lab cloud runs show the inputs and their source. Custom historical runs
+use adjusted daily closes converted to USD with date-matched exchange rates
+and require at least 15 common price observations. Presets use fixed scenario
+inputs. Browser runs use a worker and identify preset or hypothetical inputs.
 
 Start the backend server:
 ```bash
