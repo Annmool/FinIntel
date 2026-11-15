@@ -1,0 +1,62 @@
+.academy {
+  display: grid;
+  gap: 16px;
+}
+
+.academy > button {
+  justify-self: start;
+}
+
+.academy .academy-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr));
+}
+
+.academy h1 {
+  font-size: 1.2rem;
+}
+
+.academy p {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  margin: 10px 0 0;
+}
+
+.academy .panel-title svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.academy-lesson code {
+  display: block;
+  padding: 8px 10px;
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  background: var(--bg-surface-elevated);
+  border-radius: var(--radius-xs);
+}
+
+.academy-resources ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr));
+  gap: 14px 20px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.academy-resources li {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
+.academy-resources a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.academy-resources p {
+  margin-top: 4px;
+}

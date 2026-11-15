@@ -1,115 +1,86 @@
-import React from 'react';
-import { BookOpen, ArrowLeft, Activity, ShieldAlert, Cpu, BarChart2 } from 'lucide-react';
+import { Activity, ArrowLeft, BarChart2, BookOpen, Cpu, Globe, ShieldAlert } from 'lucide-react';
+import './Academy.css';
 
-const Academy = ({ onClose }) => {
+const resources = [
+  ['Indian securities market basics', 'SEBI Investor', 'Start with shares, ETFs, corporate actions, and investor protection.', 'https://investor.sebi.gov.in/iematerial.html'],
+  ['Asset allocation and diversification', 'Investor.gov', 'Learn how portfolio weights drift and what rebalancing changes.', 'https://www.investor.gov/additional-resources/general-resources/publications-research/info-sheets/beginners-guide-asset'],
+  ['Currency risk in international investing', 'Investor.gov', 'See how exchange-rate changes affect returns on foreign holdings.', 'https://www.investor.gov/introduction-investing/general-resources/news-alerts/alerts-bulletins/investor-bulletins/international-investing'],
+  ['Monte Carlo simulation models', 'Portfolio Visualizer', 'Explore historical, statistical, and assumed-return approaches.', 'https://portfoliovisualizer.com/monte-carlo-simulation'],
+  ['Value at Risk and Expected Shortfall', 'Bank for International Settlements', 'Read the formal market-risk definitions.', 'https://www.bis.org/committees/bcbs/basel-framework/standard/mar/10/inforce/2022-01-01/published/2019-12-15'],
+  ['Relative Strength Index', 'Fidelity Learning Center', 'Learn how RSI is calculated and why extremes can persist.', 'https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/rsi']
+];
+
+function Lesson({ title, icon: Icon, children }) {
   return (
-    <div style={{ animation: 'fadeIn 0.2s ease-out' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-        <button onClick={onClose} className="btn btn-ghost" style={{ padding: '6px 0' }}>
-          <ArrowLeft size={16} />
-          <span>Back to Overview</span>
-        </button>
-        <span className="term-badge neutral">Quantitative Reference & Methodology</span>
-      </div>
+    <section className="terminal-panel academy-lesson">
+      <h2 className="panel-title"><Icon size={17} aria-hidden="true" />{title}</h2>
+      {children}
+    </section>
+  );
+}
 
-      <div className="terminal-panel" style={{ marginBottom: '16px' }}>
-        <div className="panel-header">
-          <div>
-            <h1 className="panel-title" style={{ fontSize: '1.2rem' }}>
-              <BookOpen size={20} color="var(--accent)" />
-              Financial Engineering & Analytics Reference
-            </h1>
-            <span className="panel-subtitle">
-              Theoretical frameworks, stochastic models, risk metrics, and terminal operation guide
-            </span>
-          </div>
-        </div>
+export default function Academy({ onClose }) {
+  return (
+    <div className="academy">
+      <button type="button" onClick={onClose} className="btn btn-ghost">
+        <ArrowLeft size={16} aria-hidden="true" /> Back to Overview
+      </button>
 
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.86rem', margin: '0 0 16px 0', lineHeight: '1.6' }}>
-          FinIntel implements institutional financial models designed to measure risk, simulate tail events, and optimize asset allocation. Below is an overview of the core analytical principles embedded throughout the terminal.
-        </p>
-      </div>
+      <header className="terminal-panel academy-intro">
+        <h1 className="panel-title"><BookOpen size={20} aria-hidden="true" /> Methodology &amp; Reference</h1>
+        <p>Learn how FinIntel values cross-currency holdings, tests scenarios, and estimates portfolio risk.</p>
+      </header>
 
       <div className="academy-grid">
-        {/* Module 1 */}
-        <div className="terminal-panel">
-          <div className="panel-header">
-            <h3 className="panel-title" style={{ fontSize: '0.88rem' }}>
-              <Cpu size={16} color="var(--accent)" />
-              Monte Carlo Simulation & GBM
-            </h3>
-            <span className="term-badge neutral">Stochastic SDE</span>
-          </div>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: '1.6', margin: 0 }}>
-            Asset trajectories are modeled via <strong>Geometric Brownian Motion (GBM)</strong>:
-            <br />
-            <code className="font-mono" style={{ display: 'block', padding: '8px 10px', background: 'var(--bg-surface-elevated)', borderRadius: 'var(--radius-xs)', margin: '8px 0', fontSize: '0.78rem', color: 'var(--text-primary)' }}>
-              S(t+Δt) = S(t) · exp((μ - 0.5σ²)Δt + σ√Δt · Z)
-            </code>
-            Where <span className="font-mono">μ</span> is annualized drift, <span className="font-mono">σ</span> is volatility, and <span className="font-mono">Z</span> is a standard normal shock. Cross-asset correlation is modeled via <strong>Cholesky decomposition</strong> (<span className="font-mono">R = L·Lᵀ</span>).
-          </p>
-        </div>
+        <Lesson title="Portfolio value and currency conversion" icon={Globe}>
+          <p><strong>USD/INR</strong> is the number of rupees per US dollar. To convert USD to INR, multiply by the rate. To convert INR to USD, divide by it.</p>
+          <p><strong>Example.</strong> At ₹90 per dollar, a ₹9,000 position is worth $100. If the rate rises to ₹99 per dollar and the position stays at ₹9,000, its USD value falls to $90.91. In INR view, a $100 position rises from ₹9,000 to ₹9,900 over the same FX move.</p>
+          <p>Current holding value uses quantity × closing price. Cost basis uses the recorded entry price. The dashboard converts both at its display FX rates, so converted unrealized P&amp;L does not preserve the exchange rate at the original purchase.</p>
+        </Lesson>
 
-        {/* Module 2 */}
-        <div className="terminal-panel">
-          <div className="panel-header">
-            <h3 className="panel-title" style={{ fontSize: '0.88rem' }}>
-              <ShieldAlert size={16} color="var(--danger)" />
-              Value-at-Risk (VaR) & CVaR
-            </h3>
-            <span className="term-badge neg">Risk Theory</span>
-          </div>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: '1.6', margin: 0 }}>
-            <strong>Value-at-Risk (VaR 95%)</strong> defines the maximum expected dollar loss at a 95% statistical confidence interval over a given holding period.
-            <br /><br />
-            <strong>Conditional VaR (CVaR / Expected Shortfall)</strong> measures the expected loss conditional on exceeding the VaR cutoff:
-            <code className="font-mono" style={{ display: 'block', padding: '8px 10px', background: 'var(--bg-surface-elevated)', borderRadius: 'var(--radius-xs)', margin: '8px 0', fontSize: '0.78rem', color: 'var(--text-primary)' }}>
-              CVaR_α = E[ Loss | Loss ≥ VaR_α ]
-            </code>
-            This captures fat-tail risk as mandated under Basel III banking guidelines.
-          </p>
-        </div>
+        <Lesson title="Portfolio stress test" icon={Activity}>
+          <p>Start with recent closing prices and provider exchange rates. Apply your price shocks to USD- and INR-priced stocks, then value the same shares using the shocked USD/INR rate. The scenario excludes cash and leaves other stock prices and exchange rates against USD fixed.</p>
+          <p><strong>Try it in Overview.</strong> Set both stock shocks to 0% and USD/INR to +5% to isolate currency risk. Next set INR-priced stocks to −15%. At a baseline of ₹90 per dollar, the ₹9,000 position goes from $100 to $80.95 after both shocks.</p>
+          <p>Each holding’s impact is its stressed value minus its starting value. The largest impacts are ranked by size in either direction. The result describes the scenario you entered. It gives no probability for that scenario.</p>
+        </Lesson>
 
-        {/* Module 3 */}
-        <div className="terminal-panel">
-          <div className="panel-header">
-            <h3 className="panel-title" style={{ fontSize: '0.88rem' }}>
-              <Activity size={16} color="var(--info)" />
-              Modern Portfolio Theory (MPT)
-            </h3>
-            <span className="term-badge neutral">Markowitz</span>
-          </div>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: '1.6', margin: 0 }}>
-            Developed by Harry Markowitz, MPT constructs the <strong>Efficient Frontier</strong> by balancing portfolio expected return <span className="font-mono">E[R_p]</span> against portfolio variance:
-            <code className="font-mono" style={{ display: 'block', padding: '8px 10px', background: 'var(--bg-surface-elevated)', borderRadius: 'var(--radius-xs)', margin: '8px 0', fontSize: '0.78rem', color: 'var(--text-primary)' }}>
-              σ_p² = wᵀ Σ w
-            </code>
-            The <strong>Tangency Portfolio</strong> maximizes the Sharpe Ratio along the Capital Allocation Line (CAL), providing the maximum excess return per unit of volatility.
-          </p>
-        </div>
+        <Lesson title="Monte Carlo and Quant Lab" icon={Cpu}>
+          <p>Quant Lab samples many possible price paths over a chosen number of trading days. Geometric Brownian Motion (GBM) uses expected return, volatility, and correlated random shocks at each step.</p>
+          <code>S(t+Δt) = S(t) × exp[(μ − ½σ²)Δt + σ√Δt × Z]</code>
+          <p>Here μ is annualized price drift, σ is annualized volatility, and Z is a standard normal shock. Cholesky decomposition combines shocks across assets using the input correlation matrix.</p>
+          <p>Custom historical cloud runs align adjusted closing prices and FX by date in USD and require at least 15 common observations. Presets and browser runs can use fixed assumptions. Check the run’s assumptions and history window before comparing results. Constant volatility and correlation can miss jumps or changes in market behavior.</p>
+        </Lesson>
 
-        {/* Module 4 */}
-        <div className="terminal-panel">
-          <div className="panel-header">
-            <h3 className="panel-title" style={{ fontSize: '0.88rem' }}>
-              <BarChart2 size={16} color="var(--warning)" />
-              Technical Indicators & RSI
-            </h3>
-            <span className="term-badge neutral">Technicals</span>
-          </div>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: '1.6', margin: 0 }}>
-            <strong>Relative Strength Index (RSI 14)</strong> measures the velocity of price changes on a scale from 0 to 100:
-            <br />
-            • <span className="font-mono" style={{ color: 'var(--success)' }}>RSI &lt; 30</span>: Oversold momentum condition.
-            <br />
-            • <span className="font-mono" style={{ color: 'var(--danger)' }}>RSI &gt; 70</span>: Overbought momentum condition.
-            <br /><br />
-            Combined with a 20-day Simple Moving Average (SMA), it tracks mean-reversion probabilities without subjective chart drawing.
-          </p>
-        </div>
+        <Lesson title="VaR, expected shortfall, and drawdown" icon={ShieldAlert}>
+          <p><strong>95% Value at Risk (VaR)</strong> is a modeled loss threshold for the selected horizon. Roughly 5% of modeled outcomes fall beyond that threshold.</p>
+          <p><strong>95% CVaR</strong>, also called expected shortfall, estimates the average loss in that worst 5%. For example, a 30-day VaR of $500 and CVaR of $800 mean the modeled cutoff is $500 and the average loss in that tail is about $800. Losses can exceed both.</p>
+          <p><strong>Maximum drawdown</strong> measures the largest percentage fall from an earlier peak along a path. A portfolio can finish near its starting value after experiencing a large drawdown along the way.</p>
+        </Lesson>
+
+        <Lesson title="Allocation, diversification, and Sharpe ratio" icon={Activity}>
+          <p>A holding’s weight is its value divided by total portfolio value, with holdings converted to a common currency. Correlation helps explain how assets move together. Several stocks can still give you concentrated exposure when they respond to the same events.</p>
+          <code>Portfolio variance = wᵀΣw</code>
+          <p>Here w is the vector of weights and Σ is the return covariance matrix. Quant Lab evaluates candidate allocations to approximate the efficient frontier. The highest sampled Sharpe ratio reflects excess modeled return over the risk-free rate per unit of volatility. Results can change materially when you change the inputs.</p>
+        </Lesson>
+
+        <Lesson title="Charts, screener, and paper fills" icon={BarChart2}>
+          <p><strong>RSI (14)</strong> summarizes recent gains and losses on a 0–100 scale. FinIntel’s stock panel labels readings below 35 as oversold and above 65 as overbought. A 20-period moving average smooths recent closes. Both describe recent prices.</p>
+          <p><strong>Screener rows</strong> can be marked as sample or last available data when the feed is limited. Check the source and date before interpreting a ranking.</p>
+          <p><strong>Paper trades</strong> settle against virtual cash using a recent provider quote and provider FX when needed. The order ticket shows an estimate. The fill reflects the server quote available at execution.</p>
+        </Lesson>
       </div>
+
+      <section className="terminal-panel academy-resources" aria-labelledby="academy-resources-title">
+        <h2 id="academy-resources-title" className="panel-title"><BookOpen size={17} aria-hidden="true" /> Learning resources</h2>
+        <ul>
+          {resources.map(([title, source, description, href]) => (
+            <li key={href}>
+              <a href={href} target="_blank" rel="noopener noreferrer">{title}</a>
+              <p>{source} · {description}</p>
+            </li>
+          ))}
+        </ul>
+      </section>
     </div>
   );
-};
-
-export default Academy;
+}
