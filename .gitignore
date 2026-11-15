@@ -17,6 +17,9 @@ build/
 dist/
 /client/build/
 
+# Private repository instructions
+/AGENTS.md
+
 # IDEs and Editors
 .idea/
 .vscode/

@@ -36,6 +36,7 @@ import Screener from './Screener';
 import StockChart from './StockChart';
 import TickerTape from './TickerTape';
 import QuantLab from './QuantLab';
+import PortfolioStress from './PortfolioStress';
 import { calculateRSI } from './utils/indicators';
 import {
   DEFAULT_FX_RATES,
@@ -1639,6 +1640,11 @@ function App() {
                   </button>
                 </div>
               </div>
+
+              {user && (
+                <PortfolioStress holdings={portfolio} marks={portfolioPrices}
+                  fxRates={portfolioFxRates} currency={baseCurrency} />
+              )}
 
               {/* Macro Intelligence Briefing & Structured Catalysts (Span 7) */}
               <div className="terminal-panel dashboard-span-7">

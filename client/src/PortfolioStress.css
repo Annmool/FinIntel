@@ -1,0 +1,52 @@
+.portfolio-stress-fields,
+.portfolio-stress-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  gap: 12px;
+}
+
+.portfolio-stress-fields label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.portfolio-stress-fields input,
+.portfolio-stress-metrics > div {
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface-elevated);
+  color: var(--text-primary);
+}
+
+.portfolio-stress-metrics dt {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.portfolio-stress-metrics dd {
+  margin: 4px 0 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.portfolio-stress h3 {
+  font-size: 0.9rem;
+}
+
+.portfolio-stress-contributions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.portfolio-stress-contributions li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
