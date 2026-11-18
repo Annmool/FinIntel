@@ -86,6 +86,8 @@ STOCK_API_KEY=your_twelve_data_api_key
 FINNHUB_API_KEY=your_finnhub_api_key
 EXCHANGERATE_API_KEY=your_exchangerate_api_key
 FIREBASE_PROJECT_ID=finintel-a64ec
+STOCK_API_KEYS=optional_comma_separated_twelve_data_keys
+ALPHA_VANTAGE_API_KEY=optional_alpha_vantage_key
 ```
 
 The backend verifies Firebase ID tokens on all user-data routes. Set
@@ -102,6 +104,21 @@ Quant Lab cloud runs show the inputs and their source. Custom historical runs
 use adjusted daily closes converted to USD with date-matched exchange rates
 and require at least 15 common price observations. Presets use fixed scenario
 inputs. Browser runs use a worker and identify preset or hypothetical inputs.
+
+Stock charts use Twelve Data and Yahoo Finance, with an optional Alpha Vantage
+daily-history fallback for plain U.S. tickers. Configure additional authorized
+Twelve Data keys through `STOCK_API_KEYS` and Alpha Vantage keys through
+`ALPHA_VANTAGE_API_KEY` or `ALPHA_VANTAGE_API_KEYS`. Quota and authentication
+failures temporarily cool down the affected key. Provider errors and malformed
+candles fall through to the next feed. Chart responses include a source.
+Paper execution continues to require a verified matching quote and timestamp.
+
+The gold and silver panel refreshes once per minute through `/api/metals`.
+It uses Gold API spot references and explicitly labeled Yahoo Finance futures
+references if spot is unavailable. Quotes show USD per troy ounce and their
+provider update time. INR per gram is an indicative FX conversion using
+31.1034768 grams per troy ounce. Taxes, retail premiums, purity adjustments, and
+making charges are excluded. Last available quotes remain labeled during outages.
 
 Start the backend server:
 ```bash

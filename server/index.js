@@ -12,6 +12,8 @@ const rateLimit = require('express-rate-limit');
 const { createRequireAuth } = require('./middleware/requireAuth');
 const { normalizePaperQuote, marketTimeMs, isRecentMarketTime } = require('./services/paperTrading');
 const { getOrCreateVirtualAccount, settlePaperOrder } = require('./services/paperSettlement');
+const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
+const { createMetalsFeed } = require('./services/metals');
 const YahooFinance = require('yahoo-finance2').default;
 const yahooFinance = new YahooFinance({
     suppressNotices: ['yahooSurvey'],
@@ -268,7 +270,7 @@ const fetchFromYahoo = async (sym) => {
     const oneYearAgo = new Date();
     oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
     const queryOptions = { period1: oneYearAgo.toISOString().split('T')[0], interval: '1d' };
-    const result = await yahooFinance.chart(sym, queryOptions, { validateResult: false });
+    const result = await yahooFinance.chart(sym, queryOptions, { validateResult: false, fetchOptions: { signal: AbortSignal.timeout(4500) } });
     if (!result || !result.quotes || result.quotes.length === 0) throw new Error("No data found on Yahoo Finance");
     const currency = result.meta?.currency || inferCurrencyFromSymbol(sym);
     return {
@@ -358,55 +360,32 @@ app.get('/', (req, res) => {
 });
 
 // Stock Data (Twelve Data with Yahoo Finance Fallback/NSE Support)
+const twelveKeys = apiKeys(process.env.STOCK_API_KEY, process.env.STOCK_API_KEYS);
+const alphaKeys = apiKeys(process.env.ALPHA_VANTAGE_API_KEY, process.env.ALPHA_VANTAGE_API_KEYS);
+const priceFeeds = createPriceFeeds({
+    http: axios,
+    fetchYahooHistory: fetchFromYahoo,
+    fetchYahooQuote: getYahooPaperQuote,
+    twelveKeys,
+    alphaKeys
+});
+const loadMetals = createMetalsFeed({ http: axios, yahoo: yahooFinance });
+
+app.get('/api/metals', async (req, res) => {
+    const quotes = await getOrLoad('metals', 60, loadMetals);
+    res.json({ quotes, fetchedAt: new Date().toISOString() });
+});
+
 app.get('/api/stock/:symbol', async (req, res) => {
-    let rawSymbol = req.params.symbol.toUpperCase();
-    let symbol = rawSymbol;
-    let exchangeParam = '';
-    let preferYahoo = false;
-
-    if (rawSymbol.includes(':')) {
-        const parts = rawSymbol.split(':');
-        symbol = parts[0];
-        exchangeParam = `&exchange=${parts[1]}`;
-    } else if (rawSymbol.includes('.') && !rawSymbol.endsWith('.US')) {
-        preferYahoo = true;
+    const symbol = req.params.symbol.trim().toUpperCase();
+    if (!/^[A-Z0-9.^=_-]{1,24}(?::[A-Z0-9_-]{1,16})?$/.test(symbol)) {
+        return res.status(400).json({ error: 'Provide a valid ticker symbol.' });
     }
-
     try {
-        const cacheKey = `stock_${rawSymbol}`;
-        const cached = myCache.get(cacheKey);
-        if (isValidCandleData(cached)) {
-            return res.json(cached);
-        } else if (cached) {
-            myCache.del(cacheKey);
-        }
-
-        const data = await getOrLoad(cacheKey, 300, async () => {
-            let result;
-            if (preferYahoo) {
-                result = await fetchFromYahoo(rawSymbol);
-            } else {
-                try {
-                    const url = `${TWELVE_DATA_URL}/time_series?symbol=${symbol}${exchangeParam}&interval=1day&apikey=${process.env.STOCK_API_KEY}`;
-                    result = await fetchWithCache(url, `td_raw_${rawSymbol}`, 300);
-                    if (!isValidCandleData(result)) throw new Error("Twelve Data returned incomplete quotes");
-                } catch (err) {
-                    console.log(`Twelve Data unavailable for ${symbol} (${err.message}). Falling back to Yahoo Finance.`);
-                    result = await fetchFromYahoo(symbol);
-                }
-            }
-            if (!isValidCandleData(result)) throw new Error("No valid candle data returned");
-            if (result.meta) {
-                result.meta.symbol = rawSymbol;
-                if (!result.meta.currency) result.meta.currency = inferCurrencyFromSymbol(rawSymbol);
-            }
-            return result;
-        }, { shouldCache: isValidCandleData });
-
+        const data = await getOrLoad(`stock_${symbol}`, 300, () => priceFeeds.getHistory(symbol));
         res.json(data);
-    } catch (e) {
-        console.error("Stock Fetch Error:", e.message);
-        res.status(429).json({ error: "API Limit reached or symbol not found." });
+    } catch (error) {
+        res.status(error.status || 503).json({ error: 'Price feeds are temporarily unavailable for this listing. Try again shortly.' });
     }
 });
 
@@ -856,51 +835,19 @@ app.get('/api/virtual-account/:userId', async (req, res) => {
     res.json(await getOrCreateVirtualAccount(req.user.uid));
 });
 
-async function getPaperMarketQuote(symbol) {
-    return getOrLoad(`paper_quote_${symbol}`, 10, async () => {
-        try {
-            const result = await yahooFinance.quote(symbol, {}, { validateResult: false });
-            const quote = normalizePaperQuote(symbol, Array.isArray(result) ? result[0] : result, 'Yahoo Finance');
-            if (quote) return quote;
-        } catch (error) {
-            console.warn(`Yahoo quote unavailable for ${symbol}: ${error.message}`);
-        }
+async function getYahooPaperQuote(symbol) {
+    try {
+        const result = await yahooFinance.quote(symbol, {}, { validateResult: false, fetchOptions: { signal: AbortSignal.timeout(4500) } });
+        const quote = normalizePaperQuote(symbol, Array.isArray(result) ? result[0] : result, 'Yahoo Finance');
+        if (quote) return quote;
+    } catch (_) { /* Try the chart metadata next. */ }
+    const start = new Date(Date.now() - 7 * 86400000);
+    const chart = await yahooFinance.chart(symbol, { period1: start, interval: '1d' }, { validateResult: false, fetchOptions: { signal: AbortSignal.timeout(4500) } });
+    return normalizePaperQuote(symbol, chart?.meta, 'Yahoo Finance chart');
+}
 
-        try {
-            const start = new Date(Date.now() - 7 * 86400000);
-            const chart = await yahooFinance.chart(symbol, { period1: start, interval: '1d' }, { validateResult: false });
-            const quote = normalizePaperQuote(symbol, chart?.meta, 'Yahoo Finance chart');
-            if (quote) return quote;
-        } catch (error) {
-            console.warn(`Yahoo chart quote unavailable for ${symbol}: ${error.message}`);
-        }
-
-        const exchange = symbol.endsWith('.NS') ? 'NSE' : symbol.endsWith('.BO') ? 'BSE' : undefined;
-        const ticker = exchange ? symbol.slice(0, -3) : symbol;
-        if (process.env.STOCK_API_KEY && /^[A-Z][A-Z0-9-]{0,23}$/.test(ticker)) {
-            try {
-                const { data } = await axios.get(`${TWELVE_DATA_URL}/quote`, {
-                    params: { symbol: ticker, exchange },
-                    headers: { Authorization: `apikey ${process.env.STOCK_API_KEY}` },
-                    timeout: 4000
-                });
-                const expectedCurrency = exchange ? 'INR' : 'USD';
-                if (data?.currency === expectedCurrency && (!exchange || data.exchange === exchange)) {
-                    const quote = normalizePaperQuote(ticker, {
-                        symbol: data.symbol,
-                        currency: data.currency,
-                        regularMarketPrice: data.close,
-                        regularMarketTime: data.timestamp
-                    }, 'Twelve Data');
-                    if (quote) return quote;
-                }
-            } catch (error) {
-                console.warn(`Twelve Data quote unavailable for ${symbol}: ${error.message}`);
-            }
-        }
-
-        throw Object.assign(new Error(`No recent verified market quote for ${symbol}. Try again later.`), { status: 503 });
-    });
+function getPaperMarketQuote(symbol) {
+    return getOrLoad(`paper_quote_${symbol}`, 10, () => priceFeeds.getQuote(symbol));
 }
 
 function submitPaperOrder(side) {
