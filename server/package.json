@@ -8,7 +8,7 @@
     "test:integration": "node --test integration/paperSettlement.cases.js",
     "build": "g++ -O3 -fopenmp -std=c++20 quant_core/quant_engine.cpp -o quant_core/quant_engine",
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "node --watch index.js"
   },
   "engines": {
     "node": ">=20.19.0"
@@ -28,7 +28,6 @@
     "mongoose": "^9.4.1",
     "node-cache": "^5.1.2",
     "node-cron": "^4.2.1",
-    "nodemon": "^3.1.14",
     "sentiment": "^5.0.2",
     "yahoo-finance2": "^3.14.0"
   },
