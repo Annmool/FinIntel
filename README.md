@@ -124,6 +124,33 @@ npm start
 
 The app will run locally at [http://localhost:3000](http://localhost:3000) and the API will be available at [http://localhost:5000](http://localhost:5000).
 
+### Paper settlement integration tests
+
+Run `npm run test:integration` from `server/` against a disposable local
+MongoDB replica set. The default URI is
+`mongodb://127.0.0.1:27018/?replicaSet=rs0`. Set `PAPER_TEST_MONGO_URI` for a
+different loopback port or replica-set name. The suite uses fixed quote
+fixtures and a uniquely named database that it drops on teardown.
+
+To reproduce the CI setup with Docker, start the container and initialize the
+replica set. Run the suite once `db.hello().isWritablePrimary` is true.
+
+```sh
+docker run --rm -d --name finintel-mongo-test -p 127.0.0.1:27018:27018 mongo:8.0.16 --replSet rs0 --port 27018 --bind_ip_all
+docker exec finintel-mongo-test mongosh --quiet --port 27018 --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27018"}]})'
+npm run test:integration
+docker stop finintel-mongo-test
+```
+
+### Interpreting Quant Lab timings
+
+The native engine timer measures its computation after input parsing and
+validation. Measure the full API request separately to include history
+lookups, process startup, and response handling. When comparing runs, record
+the arguments, machine, compiler flags, and thread count. Use the same
+model and work when comparing engines, repeat the runs, and report a median
+and a tail percentile alongside the sample count.
+
 ---
 
 ## 📝 License
