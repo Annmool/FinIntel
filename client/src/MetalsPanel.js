@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import axios from './apiClient';
 import { API_URL } from './apiConfig';
-import { formatPrice } from './utils/currency';
+import { formatPrice, getCurrencySymbol } from './utils/currency';
 import './MetalsPanel.css';
 
 export default function MetalsPanel({ currency, fxRates }) {
@@ -41,7 +41,7 @@ export default function MetalsPanel({ currency, fxRates }) {
       <div className="panel-header">
         <div>
           <h2 className="panel-title" id="metals-heading">Gold &amp; silver</h2>
-          <p className="panel-subtitle">Global market references · USD per troy ounce</p>
+          <p className="panel-subtitle">USD per troy ounce · 1 troy ounce ≈ 31.1035 grams</p>
         </div>
         <button type="button" className="btn btn-ghost btn-sm" aria-label="Refresh metals"
           disabled={loading} onClick={() => setRevision(value => value + 1)}>
@@ -54,13 +54,16 @@ export default function MetalsPanel({ currency, fxRates }) {
           const available = Number.isFinite(quote?.price) && quote.price > 0;
           const age = Date.now() - Date.parse(quote?.updatedAt);
           const stale = failed || quote?.cached || !Number.isFinite(age) || age > 15 * 60000;
-          const inr = fxRates.INR;
+          const rate = currency === 'USD' ? 1 : fxRates[currency];
           return (
             <article className="metal-quote" key={symbol}>
               <h3>{name} <span className="panel-subtitle">{symbol}</span></h3>
               <div className="metal-price font-mono">{available ? `$${formatPrice(quote.price, 'USD')}` : loading ? 'Loading…' : 'Unavailable'}</div>
-              {available && currency === 'INR' && Number.isFinite(inr) && inr > 0 && (
-                <p>≈ ₹{formatPrice(quote.price * inr / 31.1034768, 'INR')} / gram · FX-converted</p>
+              {available && (
+                <p>{Number.isFinite(rate) && rate > 0
+                  ? `≈ ${getCurrencySymbol(currency)}${formatPrice(quote.price * rate / 31.1034768, currency)} / gram${currency === 'USD' ? '' : ' · FX-converted'}`
+                  : `${currency} per gram unavailable · waiting for exchange rate`}
+                </p>
               )}
               {available && <>
                 <p>{quote.kind} · {quote.source}</p>

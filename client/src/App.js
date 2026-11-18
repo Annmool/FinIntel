@@ -1354,6 +1354,26 @@ function App() {
                ========================================================================== */
             <div className="dashboard-grid">
               <div className="dashboard-span-12 dashboard-currency-toolbar">
+                    <span className="dashboard-currency-label" id="dashboard-currency-label">Dashboard currency</span>
+                    <div className="currency-toggle-group" role="group" aria-labelledby="dashboard-currency-label">
+                      <button
+                        type="button"
+                        className={`currency-toggle-btn ${baseCurrency === 'USD' ? 'active' : ''}`}
+                        aria-pressed={baseCurrency === 'USD'}
+                        onClick={() => toggleBaseCurrency('USD')}
+                      >
+                        USD ($)
+                      </button>
+                      <button
+                        type="button"
+                        className={`currency-toggle-btn ${baseCurrency === 'INR' ? 'active' : ''}`}
+                        aria-pressed={baseCurrency === 'INR'}
+                        onClick={() => toggleBaseCurrency('INR')}
+                      >
+                        INR (₹)
+                      </button>
+                    </div>
+
                     {/* FX quote shows the provider and its own quote time. */}
                     <div
                       className="fx-rate-pill"
@@ -1382,25 +1402,6 @@ function App() {
                       </button>
                     </div>
 
-                    <span className="dashboard-currency-label" id="dashboard-currency-label">Dashboard currency</span>
-                    <div className="currency-toggle-group" role="group" aria-labelledby="dashboard-currency-label">
-                      <button
-                        type="button"
-                        className={`currency-toggle-btn ${baseCurrency === 'USD' ? 'active' : ''}`}
-                        aria-pressed={baseCurrency === 'USD'}
-                        onClick={() => toggleBaseCurrency('USD')}
-                      >
-                        USD ($)
-                      </button>
-                      <button
-                        type="button"
-                        className={`currency-toggle-btn ${baseCurrency === 'INR' ? 'active' : ''}`}
-                        aria-pressed={baseCurrency === 'INR'}
-                        onClick={() => toggleBaseCurrency('INR')}
-                      >
-                        INR (₹)
-                      </button>
-                    </div>
 
               </div>
               {/* Question 1 & 2: Multi-Currency Valuation, Cost Basis, Buying Power & Risk Node */}
