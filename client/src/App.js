@@ -37,6 +37,7 @@ import StockChart from './StockChart';
 import TickerTape from './TickerTape';
 import QuantLab from './QuantLab';
 import PortfolioStress from './PortfolioStress';
+import MetalsPanel from './MetalsPanel';
 import { calculateRSI } from './utils/indicators';
 import {
   DEFAULT_FX_RATES,
@@ -56,6 +57,7 @@ function App() {
   const pendingPaperOrder = useRef(null);
   const submittingOrder = useRef(false);
   const stockRequest = useRef(0);
+  const stockController = useRef(null);
   const [user, setUser] = useState(null);
   const [symbol, setSymbol] = useState('');
   const [suggestions, setSuggestions] = useState([]);
@@ -356,89 +358,66 @@ function App() {
     return () => { clearTimeout(timer); controller.abort(); };
   }, [symbol, showSuggestions]);
 
-  const fetchStockData = async (s) => {
-    let sym = (s || symbol)?.trim();
-    if (!sym) return;
+  useEffect(() => () => stockController.current?.abort(), []);
+
+  useEffect(() => {
+    if (activeTab !== 'markets') {
+      stockController.current?.abort();
+      stockRequest.current += 1;
+      setLoading(false);
+    }
+  }, [activeTab]);
+
+  const fetchStockData = async (input) => {
+    const requested = (input || symbol)?.trim().toUpperCase();
+    if (!requested) return;
     const requestId = ++stockRequest.current;
+    stockController.current?.abort();
+    const controller = new AbortController();
+    stockController.current = controller;
+    const config = { signal: controller.signal, timeout: 25000 };
     setShowSuggestions(false);
     setSuggestions([]);
     setLoading(true);
     setAppError('');
     setAiAnalysis('');
+    setData(null);
+    setNews([]);
     setActiveTab('markets');
-
     try {
-      let targetSym = sym.toUpperCase();
-      let stockRes, newsRes, fundRes;
-
+      let target = requested;
+      let stock;
       try {
-        [stockRes, newsRes, fundRes] = await Promise.all([
-          axios.get(`${API_URL}/api/stock/${encodeURIComponent(targetSym)}`),
-          axios.get(`${API_URL}/api/news/${encodeURIComponent(targetSym)}`),
-          axios.get(`${API_URL}/api/fundamentals/${encodeURIComponent(targetSym)}`)
-        ]);
-
-        if (
-          !stockRes.data ||
-          stockRes.data.status === 'error' ||
-          !stockRes.data.values ||
-          stockRes.data.values.length === 0
-        ) {
-          throw new Error("Invalid or empty stock data");
-        }
-      } catch (directErr) {
-        if (requestId !== stockRequest.current) return;
-        // If symbol lookup fails (e.g. user entered "APPLE" instead of "AAPL"), try smart-resolving symbol via search
-        try {
-          const searchRes = await axios.get(`${API_URL}/api/search/${encodeURIComponent(targetSym)}`);
-          if (searchRes.data && Array.isArray(searchRes.data) && searchRes.data.length > 0 && searchRes.data[0].symbol) {
-            targetSym = searchRes.data[0].symbol.toUpperCase();
-            [stockRes, newsRes, fundRes] = await Promise.all([
-              axios.get(`${API_URL}/api/stock/${encodeURIComponent(targetSym)}`),
-              axios.get(`${API_URL}/api/news/${encodeURIComponent(targetSym)}`),
-              axios.get(`${API_URL}/api/fundamentals/${encodeURIComponent(targetSym)}`)
-            ]);
-          } else {
-            throw directErr;
-          }
-        } catch {
-          throw directErr;
-        }
+        stock = await axios.get(`${API_URL}/api/stock/${encodeURIComponent(target)}`, config);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        const { data: matches } = await axios.get(`${API_URL}/api/search/${encodeURIComponent(target)}`, config);
+        if (!matches?.[0]?.symbol || matches[0].symbol.toUpperCase() === target) throw error;
+        target = matches[0].symbol.toUpperCase();
+        stock = await axios.get(`${API_URL}/api/stock/${encodeURIComponent(target)}`, config);
       }
-
-      if (requestId !== stockRequest.current) return;
-      setSymbol(targetSym);
-
-      if (
-        !stockRes.data ||
-        stockRes.data.status === 'error' ||
-        !stockRes.data.values ||
-        stockRes.data.values.length === 0
-      ) {
-        setAppError(`Unable to load market feed for ${targetSym}. Please check ticker or try again.`);
-        setData(null);
-      } else {
-        const symbolVal = stockRes.data.meta?.symbol || targetSym;
-        const sortedValues = [...stockRes.data.values].sort((a, b) => {
-          if (a.datetime && b.datetime) {
-            return new Date(b.datetime) - new Date(a.datetime);
-          }
-          return 0;
-        });
-        setData({
-          ...stockRes.data,
-          values: sortedValues,
-          meta: { ...(stockRes.data.meta || {}), symbol: symbolVal },
-          fundamentals: fundRes.data || {}
-        });
+      if (requestId !== stockRequest.current || controller.signal.aborted) return;
+      if (!stock.data?.values?.length) throw new Error('No closing prices available');
+      const values = [...stock.data.values].sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+      setSymbol(target);
+      setData({ ...stock.data, values, fundamentals: {} });
+      // Optional panels populate independently so news cannot delay a usable chart.
+      axios.get(`${API_URL}/api/news/${encodeURIComponent(target)}`, config).then(({ data }) => {
+        if (!controller.signal.aborted && requestId === stockRequest.current) setNews(Array.isArray(data) ? data : []);
+      }).catch(() => {});
+      axios.get(`${API_URL}/api/fundamentals/${encodeURIComponent(target)}`, config).then(({ data }) => {
+        if (!controller.signal.aborted && requestId === stockRequest.current) {
+          setData(previous => previous ? { ...previous, fundamentals: data || {} } : previous);
+        }
+      }).catch(() => {});
+    } catch (error) {
+      if (!controller.signal.aborted && requestId === stockRequest.current) {
+        setAppError(error.response?.data?.error || 'The market feed is unavailable. Please try again.');
+        setActiveTab('overview');
       }
-      setNews(Array.isArray(newsRes.data) ? newsRes.data : []);
-    } catch (e) {
-      if (requestId !== stockRequest.current) return;
-      setAppError(`Market data service error for ${sym.toUpperCase()}. Reverting to overview.`);
-      setData(null);
+    } finally {
+      if (!controller.signal.aborted && requestId === stockRequest.current) setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleProtectedAction = async (type) => {
@@ -834,6 +813,9 @@ function App() {
             <button
               className={`nav-item ${activeTab === 'overview' && !data ? 'active' : ''}`}
               onClick={() => {
+                stockController.current?.abort();
+                stockRequest.current += 1;
+                setLoading(false);
                 setData(null);
                 setActiveTab('overview');
                 setIsMobileMenuOpen(false);
@@ -1131,16 +1113,14 @@ function App() {
             </div>
           )}
 
-          {/* Loading Indicator */}
-          {loading && (
-            <div className="terminal-panel" style={{ padding: '20px', textAlign: 'center', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', marginBottom: '14px' }}>
-              <span className="dot-pulse"></span>
-              <span className="font-mono" style={{ fontSize: '0.84rem' }}>Fetching market telemetry and quantitative models...</span>
-            </div>
-          )}
-
           {/* SCREEN ROUTING */}
-          {activeTab === 'screener' ? (
+          {activeTab === 'markets' && loading ? (
+            <section className="terminal-panel market-loading" aria-busy="true" aria-label="Loading stock data">
+              <p role="status">Loading closing prices…</p>
+              <div className="market-loading-line" />
+              <div className="market-loading-chart" />
+            </section>
+          ) : activeTab === 'screener' ? (
             <Screener onClose={() => setActiveTab('overview')} onSelectSymbol={(sym) => fetchStockData(sym)} />
           ) : activeTab === 'academy' ? (
             <Academy onClose={() => setActiveTab('overview')} />
@@ -1198,12 +1178,12 @@ function App() {
                ========================================================================== */
             <div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-                <button onClick={() => setData(null)} className="btn btn-ghost" style={{ padding: '4px 0' }}>
+                <button onClick={() => { stockController.current?.abort(); stockRequest.current += 1; setData(null); setActiveTab('overview'); }} className="btn btn-ghost" style={{ padding: '4px 0' }}>
                   <ArrowLeft size={16} />
                   <span>Back to Overview</span>
                 </button>
                 <span className="term-badge neutral">
-                  Market Feed: {data?.meta?.symbol || symbol}
+                  {data?.meta?.source || 'Market feed'} · {data?.meta?.symbol || symbol}
                 </span>
               </div>
 
@@ -1373,6 +1353,56 @@ function App() {
                OVERVIEW DASHBOARD: The 5 Core Investor Questions Answered
                ========================================================================== */
             <div className="dashboard-grid">
+              <div className="dashboard-span-12 dashboard-currency-toolbar">
+                    {/* FX quote shows the provider and its own quote time. */}
+                    <div
+                      className="fx-rate-pill"
+                      title={`USD/INR source: ${fxRateSource}. Provider quote time: ${fxLastUpdated ? fxLastUpdated.toLocaleString() : 'unavailable'}. ${fxWasCached ? 'Served from backend cache.' : 'Fetched from provider.'} Rates from different providers may vary.`}
+                    >
+                      <Globe size={12} color="var(--accent)" />
+                      <span className="font-mono" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                        1 USD = ₹{fxRate.toFixed(2)}
+                      </span>
+                      <span className="font-mono" style={{ fontSize: '0.58rem', color: 'var(--text-tertiary)' }}>
+                        {fxRateSource === 'ExchangeRate-API' ? 'ExchangeRate' : fxRateSource === 'Yahoo Finance' ? 'Yahoo' : fxRateSource === 'Open Exchange Rates' ? 'Open ER' : 'Fallback'}
+                        {' · '}{fxLastUpdated ? fxLastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}
+                      </span>
+                      <button
+                        type="button"
+                        className="fx-refresh-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          fetchFxRate(true);
+                        }}
+                        disabled={isFxLoading}
+                        title="Invalidate cache & force refresh exchange rates"
+                        aria-label="Refresh exchange rates"
+                      >
+                        <RefreshCw size={11} className={isFxLoading ? 'spin' : ''} />
+                      </button>
+                    </div>
+
+                    <span className="dashboard-currency-label" id="dashboard-currency-label">Dashboard currency</span>
+                    <div className="currency-toggle-group" role="group" aria-labelledby="dashboard-currency-label">
+                      <button
+                        type="button"
+                        className={`currency-toggle-btn ${baseCurrency === 'USD' ? 'active' : ''}`}
+                        aria-pressed={baseCurrency === 'USD'}
+                        onClick={() => toggleBaseCurrency('USD')}
+                      >
+                        USD ($)
+                      </button>
+                      <button
+                        type="button"
+                        className={`currency-toggle-btn ${baseCurrency === 'INR' ? 'active' : ''}`}
+                        aria-pressed={baseCurrency === 'INR'}
+                        onClick={() => toggleBaseCurrency('INR')}
+                      >
+                        INR (₹)
+                      </button>
+                    </div>
+
+              </div>
               {/* Question 1 & 2: Multi-Currency Valuation, Cost Basis, Buying Power & Risk Node */}
               <div className="dashboard-span-12">
                 <div className="portfolio-summary-bar">
@@ -1425,6 +1455,8 @@ function App() {
                 </div>
               </div>
 
+              <MetalsPanel currency={baseCurrency} fxRates={portfolioFxRates} />
+
               {/* Question 3 & 4: Multi-Currency Holdings Table with Dynamic Currency Alignment (Span 8) */}
               <div className="terminal-panel dashboard-span-8">
                 <div className="panel-header">
@@ -1439,52 +1471,6 @@ function App() {
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                    {/* FX quote shows the provider and its own quote time. */}
-                    <div 
-                      className="fx-rate-pill" 
-                      title={`USD/INR source: ${fxRateSource}. Provider quote time: ${fxLastUpdated ? fxLastUpdated.toLocaleString() : 'unavailable'}. ${fxWasCached ? 'Served from backend cache.' : 'Fetched from provider.'} Rates from different providers may vary.`}
-                    >
-                      <Globe size={12} color="var(--accent)" />
-                      <span className="font-mono" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                        1 USD = ₹{fxRate.toFixed(2)}
-                      </span>
-                      <span className="font-mono" style={{ fontSize: '0.58rem', color: 'var(--text-tertiary)' }}>
-                        {fxRateSource === 'ExchangeRate-API' ? 'ExchangeRate' : fxRateSource === 'Yahoo Finance' ? 'Yahoo' : fxRateSource === 'Open Exchange Rates' ? 'Open ER' : 'Fallback'}
-                        {' · '}{fxLastUpdated ? fxLastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}
-                      </span>
-                      <button
-                        type="button"
-                        className="fx-refresh-btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          fetchFxRate(true);
-                        }}
-                        disabled={isFxLoading}
-                        title="Invalidate cache & force refresh exchange rates"
-                        aria-label="Refresh exchange rates"
-                      >
-                        <RefreshCw size={11} className={isFxLoading ? 'spin' : ''} />
-                      </button>
-                    </div>
-
-                    {/* Currency Toggle */}
-                    <div className="currency-toggle-group" title="Select Portfolio Base Currency">
-                      <button
-                        type="button"
-                        className={`currency-toggle-btn ${baseCurrency === 'USD' ? 'active' : ''}`}
-                        onClick={() => toggleBaseCurrency('USD')}
-                      >
-                        USD ($)
-                      </button>
-                      <button
-                        type="button"
-                        className={`currency-toggle-btn ${baseCurrency === 'INR' ? 'active' : ''}`}
-                        onClick={() => toggleBaseCurrency('INR')}
-                      >
-                        INR (₹)
-                      </button>
-                    </div>
-
                     {portfolio.length > 0 && (
                       <div style={{ display: 'flex', gap: '6px' }}>
                         <button onClick={() => exportPortfolio('csv')} className="btn btn-secondary btn-sm">

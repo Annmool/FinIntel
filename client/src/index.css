@@ -643,7 +643,7 @@ button {
   font-weight: 500;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
   border: 1px solid transparent;
   white-space: nowrap;
 }
@@ -3363,3 +3363,83 @@ button {
   }
 }
 
+
+.dashboard-currency-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.dashboard-currency-label {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+@media (max-width: 640px) {
+  .dashboard-currency-toolbar {
+    justify-content: flex-start;
+  }
+  .dashboard-currency-toolbar .fx-rate-pill {
+    flex-basis: 100%;
+    width: fit-content;
+  }
+}
+
+/* Keep market loading in a stable workspace while prices arrive. */
+.market-loading {
+  min-height: 480px;
+}
+
+.market-loading p {
+  color: var(--text-secondary);
+  margin: 0 0 20px;
+}
+
+.market-loading-line,
+.market-loading-chart {
+  background: var(--bg-surface-elevated);
+  border-radius: var(--radius-xs);
+}
+
+.market-loading-line {
+  width: 45%;
+  height: 28px;
+  margin-bottom: 24px;
+}
+
+.market-loading-chart {
+  height: 320px;
+  animation: market-loading-pulse 1.4s ease-in-out infinite alternate;
+}
+
+@keyframes market-loading-pulse {
+  to { opacity: 0.5; }
+}
+
+.btn:focus-visible,
+.nav-item:focus-visible,
+.currency-toggle-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.summary-metric-value,
+.ticker-price,
+.stock-price-large,
+.risk-value {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .ticker-move { animation: none !important; }
+}
