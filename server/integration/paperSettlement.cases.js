@@ -5,8 +5,10 @@ const mongoose = require('mongoose');
 const PaperOrder = require('../models/PaperOrder');
 const PaperPortfolio = require('../models/PaperPortfolio');
 const VirtualAccount = require('../models/VirtualAccount');
+const Portfolio = require('../models/Portfolio');
 const { settlePaperOrder } = require('../services/paperSettlement');
 const { getPaperHistory } = require('../services/paperHistory');
+const { correctHoldingCost } = require('../services/holdingCost');
 
 const uri = process.env.PAPER_TEST_MONGO_URI || 'mongodb://127.0.0.1:27018/?replicaSet=rs0';
 const dbName = `finintel_test_${randomUUID().replace(/-/g, '')}`;
@@ -62,6 +64,26 @@ test('trade history pages through new and legacy receipts and is scoped to one a
   assert.equal(older.nextCursor, null);
   await assert.rejects(getPaperHistory(otherUser, { cursor: page.nextCursor }), { status: 400 });
   await assert.rejects(getPaperHistory(userId, { limit: '51' }), { status: 400 });
+});
+
+test('a legacy holding supports one cost correction from two concurrent editors', async () => {
+  const userId = randomUUID();
+  const { insertedId } = await Portfolio.collection.insertOne({ userId, symbol: 'TCS.NS', qty: 2, price: 3000 });
+  const id = insertedId.toString();
+  await assert.rejects(correctHoldingCost(randomUUID(), id, { price: 3100, revision: 0 }), { status: 404 });
+  await assert.rejects(correctHoldingCost(userId, id, { price: -10, revision: 0 }), { status: 400 });
+  const attempts = await Promise.allSettled([
+    correctHoldingCost(userId, id, { price: 3100, revision: 0 }),
+    correctHoldingCost(userId, id, { price: 3200, revision: 0 })
+  ]);
+  assert.equal(attempts.filter(attempt => attempt.status === 'fulfilled').length, 1);
+  assert.equal(attempts.find(attempt => attempt.status === 'rejected').reason.status, 409);
+  const holding = await Portfolio.findById(id).lean();
+  assert.equal(holding.qty, 2);
+  assert.equal(holding.costRevision, 1);
+  assert.equal(holding.costCorrections.length, 1);
+  assert.equal(holding.costCorrections[0].previousPrice, 3000);
+  assert.equal(holding.costCorrections[0].price, holding.price);
 });
 
 function buy(userId, overrides = {}, providers = market) {

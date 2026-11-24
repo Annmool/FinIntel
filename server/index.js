@@ -13,6 +13,7 @@ const { createRequireAuth } = require('./middleware/requireAuth');
 const { normalizePaperQuote, marketTimeMs, isRecentMarketTime } = require('./services/paperTrading');
 const { getOrCreateVirtualAccount, settlePaperOrder } = require('./services/paperSettlement');
 const { getPaperHistory } = require('./services/paperHistory');
+const { correctHoldingCost, positiveNumber } = require('./services/holdingCost');
 const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
@@ -208,7 +209,7 @@ function getCurrencySymbol(codeOrSym) {
 
 app.use(cors({
     origin: ["http://localhost:3000", "https://finintel.pages.dev"], 
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true
 }));
@@ -662,9 +663,9 @@ app.get('/api/portfolio/:userId', async (req, res) => {
 app.post('/api/portfolio', async (req, res) => {
     const { symbol, qty, price, currency } = req.body ?? {};
     const cleanSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
-    const parsedQty = ['number', 'string'].includes(typeof qty) ? Number(qty) : NaN;
-    const parsedPrice = ['number', 'string'].includes(typeof price) ? Number(price) : NaN;
-    if (!/^[A-Z0-9.^=_-]{1,24}(?::[A-Z0-9_-]{1,16})?$/.test(cleanSymbol) ||
+    const parsedQty = positiveNumber(qty);
+    const parsedPrice = positiveNumber(price);
+    if (!stockSymbolPattern.test(cleanSymbol) ||
         !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
         return res.status(400).json({ error: "Invalid portfolio parameters. Quantity and price must be positive numbers." });
     }
@@ -681,6 +682,15 @@ app.post('/api/portfolio', async (req, res) => {
     });
     await newHolding.save();
     res.json(newHolding);
+});
+
+app.patch('/api/portfolio/:id/cost', async (req, res) => {
+    try {
+        res.json(await correctHoldingCost(req.user.uid, req.params.id, req.body ?? {}));
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
+        throw error;
+    }
 });
 
 app.delete('/api/portfolio/:id', async (req, res) => {

@@ -2694,15 +2694,18 @@ button {
   border-top: 1px solid var(--border-subtle);
 }
 
-.paper-history > summary {
+.paper-history > summary,
+.cost-corrections > summary {
   cursor: pointer;
   color: var(--accent);
 }
 
-.paper-history > summary {
+.paper-history > summary,
+.cost-corrections > summary {
   font-size: 0.82rem;
 }
 
+.holding-actions,
 .paper-history-pagination {
   display: flex;
   flex-wrap: wrap;

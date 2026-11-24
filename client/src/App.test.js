@@ -3,7 +3,7 @@ import App from './App';
 import axios from './apiClient';
 import { auth } from './firebase';
 
-jest.mock('./apiClient', () => ({ get: jest.fn(), post: jest.fn() }));
+jest.mock('./apiClient', () => ({ get: jest.fn(), post: jest.fn(), patch: jest.fn() }));
 jest.mock('./firebase', () => ({ auth: { currentUser: null } }));
 jest.mock('firebase/auth', () => ({
   onAuthStateChanged: (auth, callback) => {
@@ -105,6 +105,22 @@ test('Markets & Charts gives search guidance and keeps a failed lookup ready to 
   axios.get.mockImplementation(get);
   fireEvent.click(retry);
   expect(await screen.findByRole('button', { name: 'Holdings' })).toBeInTheDocument();
+});
+
+test('shows the source of a holding close and updates cost basis after a correction', async () => {
+  holdings = [{ _id: 'holding', symbol: 'AAPL', qty: 1, price: 100, currency: 'USD' }];
+  axios.patch.mockResolvedValue({ data: { ...holdings[0], price: 120, costRevision: 1 } });
+  render(<App />);
+  expect(await screen.findByText(/Recent close.*Fixture provider/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Edit cost' }));
+  const price = screen.getByLabelText(/purchase price per share/i);
+  expect(price).toHaveValue(100);
+  fireEvent.change(price, { target: { value: '120' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save price' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(axios.patch).toHaveBeenCalledWith(expect.stringMatching(/portfolio\/holding\/cost$/),
+    { price: 120, revision: 0 }, expect.any(Object));
+  expect(within(screen.getByRole('row', { name: /AAPL/ })).getByText(/\+\$20\.00/)).toBeInTheDocument();
 });
 
 test('shows last-known marks and leaves missing holdings unvalued', async () => {

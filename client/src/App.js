@@ -39,6 +39,7 @@ import QuantLab from './QuantLab';
 import PortfolioStress from './PortfolioStress';
 import MetalsPanel from './MetalsPanel';
 import PaperTradeHistory from './PaperTradeHistory';
+import HoldingCostEditor from './HoldingCostEditor';
 import { calculateRSI } from './utils/indicators';
 import {
   DEFAULT_FX_RATES,
@@ -71,6 +72,7 @@ function App() {
   const [portfolio, setPortfolio] = useState([]);
   const [paperPortfolio, setPaperPortfolio] = useState([]);
   const [paperHistoryRefresh, setPaperHistoryRefresh] = useState(0);
+  const [editingHolding, setEditingHolding] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [theme, setTheme] = useState('dark');
   const [briefing, setBriefing] = useState([]);
@@ -336,6 +338,7 @@ function App() {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       balanceRequest.current += 1;
       setUser(u);
+      setEditingHolding(null);
       setWatchlist([]);
       setPortfolio([]);
       setPaperPortfolio([]);
@@ -1634,7 +1637,10 @@ function App() {
                                 ) : '—'}
                               </td>
                               <td style={{ textAlign: 'right' }}>
-                                <div style={{ display: 'inline-flex', gap: '4px' }}>
+                                <div className="holding-actions">
+                                  <button className="btn btn-secondary btn-sm" onClick={() => setEditingHolding(p)}>
+                                    Edit cost
+                                  </button>
                                   <button
                                     className="btn btn-secondary btn-sm"
                                     onClick={() => fetchStockData(p.symbol)}
@@ -1845,6 +1851,19 @@ function App() {
           )}
         </main>
       </div>
+
+      {editingHolding && user && (
+        <HoldingCostEditor holding={editingHolding}
+          onClose={() => setEditingHolding(null)}
+          onConflict={() => fetchPortfolio(user.uid)}
+          onSaved={updated => {
+            if (auth.currentUser?.uid !== user.uid) return;
+            setPortfolio(previous => previous.map(holding => holding._id === updated._id ? updated : holding));
+            setEditingHolding(null);
+            showToast(`Updated ${updated.symbol} purchase price`);
+          }}
+        />
+      )}
 
       {/* Institutional Paper Order & Action Modal */}
       {orderModal.isOpen && (
