@@ -36,6 +36,7 @@ export default function Academy({ onClose }) {
           <p><strong>USD/INR</strong> is the number of rupees per US dollar. To convert USD to INR, multiply by the rate. To convert INR to USD, divide by it.</p>
           <p><strong>Example.</strong> At ₹90 per dollar, a ₹9,000 position is worth $100. If the rate rises to ₹99 per dollar and the position stays at ₹9,000, its USD value falls to $90.91. In INR view, a $100 position rises from ₹9,000 to ₹9,900 over the same FX move.</p>
           <p>When you record a real holding, enter the price you paid per share in the listed currency. Cost basis uses quantity × purchase price. Current value uses quantity × closing price. The dashboard converts both at its display FX rates, so converted unrealized P&amp;L does not preserve the exchange rate at the original purchase.</p>
+          <p>Each holding shows the closing date and provider. A recent close is up to four calendar days old. A last-known close is shown if feeds fail or the close is older, up to seven calendar days. A paper fill uses its own verified quote and records the price and FX rate in paper trade history.</p>
         </Lesson>
 
         <Lesson title="Portfolio stress test" icon={Activity}>

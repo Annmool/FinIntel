@@ -25,6 +25,9 @@ beforeEach(() => {
   axios.get.mockImplementation(async url => {
     if (url.includes('/api/portfolio/')) return { data: holdings };
     if (url.includes('/api/virtual-account/')) return { data: { balance: 0 } };
+    if (url.endsWith('/api/stock/AAPL/mark')) {
+      return { data: { price: 140, currency: 'USD', source: 'Fixture provider', date: new Date().toISOString().slice(0, 10), status: 'recent-close' } };
+    }
     if (url.endsWith('/api/stock/AAPL')) {
       return { data: { meta: { symbol: 'AAPL', currency: 'USD' }, values: [{ close: '140', datetime: '2026-11-20' }] } };
     }
@@ -102,4 +105,20 @@ test('Markets & Charts gives search guidance and keeps a failed lookup ready to 
   axios.get.mockImplementation(get);
   fireEvent.click(retry);
   expect(await screen.findByRole('button', { name: 'Holdings' })).toBeInTheDocument();
+});
+
+test('shows last-known marks and leaves missing holdings unvalued', async () => {
+  holdings = [{ _id: 'a', symbol: 'AAPL', qty: 1, price: 100 }, { _id: 'b', symbol: 'TCS.NS', qty: 1, price: 3000 }];
+  const get = axios.get.getMockImplementation();
+  axios.get.mockImplementation(async url => {
+    if (url.endsWith('/TCS.NS/mark')) return { data: { status: 'unavailable' } };
+    const res = await get(url);
+    if (url.endsWith('/AAPL/mark')) res.data.status = 'last-known';
+    return res;
+  });
+  render(<App />);
+  expect(await screen.findByText(/Last-known close.*Fixture provider/)).toBeInTheDocument();
+  const missing = screen.getByRole('row', { name: /TCS\.NS/ });
+  expect(within(missing).getByText('Quote unavailable')).toBeInTheDocument();
+  expect(within(missing).queryByText(/0\.0%/)).not.toBeInTheDocument();
 });

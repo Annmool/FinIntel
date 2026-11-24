@@ -249,27 +249,13 @@ function App() {
     }
   }, []);
 
-  const fetchPortfolioMarks = useCallback((holdings, uid) => {
-    for (const symbol of new Set(holdings.map(holding => holding.symbol))) {
-      axios.get(`${API_URL}/api/stock/${encodeURIComponent(symbol)}`).then(({ data }) => {
-        if (auth.currentUser?.uid !== uid) return;
-        const candle = data?.values?.[0];
-        const price = Number(candle?.close);
-        const currency = data?.meta?.currency;
-        if (!Number.isFinite(price) || price <= 0 || !currency) return;
-        setPortfolioPrices(previous => ({ ...previous, [symbol]: { price, currency, date: candle.datetime } }));
-      }).catch(() => {});
-    }
-  }, []);
-
   const fetchPaperPortfolio = useCallback(async (uid) => {
     try {
       const { data } = await axios.get(`${API_URL}/api/paper-portfolio/${uid}`);
       if (auth.currentUser?.uid !== uid) return;
       setPaperPortfolio(data);
-      fetchPortfolioMarks(data, uid);
     } catch (e) {}
-  }, [fetchPortfolioMarks]);
+  }, []);
 
   const fetchWatchlist = async (uid) => {
     try {
@@ -283,9 +269,55 @@ function App() {
       const { data } = await axios.get(`${API_URL}/api/portfolio/${uid}`);
       if (auth.currentUser?.uid !== uid) return;
       setPortfolio(data);
-      fetchPortfolioMarks(data, uid);
     } catch (e) {}
-  }, [fetchPortfolioMarks]);
+  }, []);
+
+  useEffect(() => {
+    const uid = user?.uid;
+    const symbols = new Set([...portfolio, ...paperPortfolio].map(holding => holding.symbol));
+    if (!uid || symbols.size === 0) return;
+    const controller = new AbortController();
+    const config = { signal: controller.signal, timeout: 25000 };
+    async function loadMark(symbol) {
+      const url = `${API_URL}/api/stock/${encodeURIComponent(symbol)}`;
+      let mark;
+      try {
+        ({ data: mark } = await axios.get(`${url}/mark`, config));
+      } catch (error) {
+        // The frontend and backend can deploy independently.
+        if (error.response?.status === 404 && !controller.signal.aborted) {
+          try {
+            const { data } = await axios.get(url, config);
+            const candle = data?.values?.[0];
+            const age = Date.now() - Date.parse(candle?.datetime);
+            if (age >= 0 && age <= 7 * 86400000) {
+              mark = {
+                price: Number(candle.close), date: candle.datetime, currency: data.meta?.currency,
+                source: data.meta?.source, status: age <= 4 * 86400000 ? 'recent-close' : 'last-known'
+              };
+            }
+          } catch (_) { /* The previous mark may still be usable. */ }
+        }
+      }
+      if (controller.signal.aborted || auth.currentUser?.uid !== uid) return;
+      setPortfolioPrices(previous => {
+        const oldMark = previous[symbol];
+        const valid = Number.isFinite(mark?.price) && mark.price > 0 && mark.currency && mark.date;
+        if (valid && (!oldMark?.date || mark.date >= oldMark.date)) return { ...previous, [symbol]: mark };
+        if (oldMark?.date && Date.now() - Date.parse(oldMark.date) <= 7 * 86400000) {
+          return { ...previous, [symbol]: { ...oldMark, status: 'last-known' } };
+        }
+        return { ...previous, [symbol]: { status: 'unavailable' } };
+      });
+    }
+    const refresh = () => symbols.forEach(loadMark);
+    refresh();
+    const interval = setInterval(refresh, 5 * 60 * 1000);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
+  }, [paperPortfolio, portfolio, user?.uid]);
 
   const fetchAlerts = async (uid) => {
     try {
@@ -656,7 +688,7 @@ function App() {
   // Calculate Real Portfolio Metrics with Multi-Currency FX Engine
   const portfolioHoldingsWithPnL = portfolio.map((p) => {
     const mark = portfolioPrices[p.symbol];
-    const markCurrency = mark ? getCurrencyCode(mark.currency) : null;
+    const markCurrency = mark?.currency ? getCurrencyCode(mark.currency) : null;
     const nativeCurrency = p.currency || (markCurrency === 'GBX' ? 'GBX' : inferCurrencyFromSymbol(p.symbol));
     const nativeSymbol = getCurrencySymbol(nativeCurrency);
 
@@ -1551,6 +1583,7 @@ function App() {
                       <tbody>
                         {portfolioHoldingsWithPnL.map((p) => {
                           const isPos = p.pnlNative >= 0;
+                          const mark = portfolioPrices[p.symbol];
                           return (
                             <tr key={p._id}>
                               <td>
@@ -1570,7 +1603,17 @@ function App() {
                               </td>
                               <td className="num-col font-mono">{p.qty} shrs</td>
                               <td className="num-col font-mono">{p.nativeSymbol}{formatPrice(p.entryPrice, p.nativeCurrency)}</td>
-                              <td className="num-col font-mono">{p.nativeSymbol}{formatPrice(p.currPrice, p.nativeCurrency)}</td>
+                              <td className="num-col font-mono">
+                                {Number.isFinite(p.currPrice) ? (
+                                  <>
+                                    {p.nativeSymbol}{formatPrice(p.currPrice, p.nativeCurrency)}
+                                    <small className="receipt-detail">
+                                      {mark.status === 'last-known' ? 'Last-known close' : 'Recent close'} · {mark.date}
+                                      {mark.source && ` · ${mark.source}`}
+                                    </small>
+                                  </>
+                                ) : <small className="receipt-detail">{mark ? 'Quote unavailable' : 'Checking close…'}</small>}
+                              </td>
                               <td className="num-col font-mono" style={{ fontWeight: '600' }}>
                                 <div>{p.nativeSymbol}{formatPrice(p.currentValNative, p.nativeCurrency)}</div>
                                 {p.nativeCurrency !== baseCurrency && (

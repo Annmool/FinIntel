@@ -2681,6 +2681,13 @@ button {
   border-color: var(--border-focus);
 }
 
+.receipt-detail {
+  display: block;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
 .order-presets-row {
   display: flex;
   gap: 6px;

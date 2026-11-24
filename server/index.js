@@ -12,6 +12,7 @@ const rateLimit = require('express-rate-limit');
 const { createRequireAuth } = require('./middleware/requireAuth');
 const { normalizePaperQuote, marketTimeMs, isRecentMarketTime } = require('./services/paperTrading');
 const { getOrCreateVirtualAccount, settlePaperOrder } = require('./services/paperSettlement');
+const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
 const YahooFinance = require('yahoo-finance2').default;
@@ -370,19 +371,35 @@ const priceFeeds = createPriceFeeds({
     alphaKeys
 });
 const loadMetals = createMetalsFeed({ http: axios, yahoo: yahooFinance });
+const holdingMarks = createHoldingMarks();
+const stockSymbolPattern = /^[A-Z0-9.^=_-]{1,24}(?::[A-Z0-9_-]{1,16})?$/;
+
+function getStockHistory(symbol) {
+    return getOrLoad(`stock_${symbol}`, 300, async () => {
+        const history = await priceFeeds.getHistory(symbol);
+        holdingMarks.remember(symbol, history);
+        return history;
+    });
+}
 
 app.get('/api/metals', async (req, res) => {
     const quotes = await getOrLoad('metals', 60, loadMetals);
     res.json({ quotes, fetchedAt: new Date().toISOString() });
 });
 
+app.get('/api/stock/:symbol/mark', async (req, res) => {
+    const symbol = req.params.symbol.trim().toUpperCase();
+    if (!stockSymbolPattern.test(symbol)) return res.status(400).json({ error: 'Provide a valid ticker symbol.' });
+    res.json(await holdingMarks.getMark(symbol, getStockHistory));
+});
+
 app.get('/api/stock/:symbol', async (req, res) => {
     const symbol = req.params.symbol.trim().toUpperCase();
-    if (!/^[A-Z0-9.^=_-]{1,24}(?::[A-Z0-9_-]{1,16})?$/.test(symbol)) {
+    if (!stockSymbolPattern.test(symbol)) {
         return res.status(400).json({ error: 'Provide a valid ticker symbol.' });
     }
     try {
-        const data = await getOrLoad(`stock_${symbol}`, 300, () => priceFeeds.getHistory(symbol));
+        const data = await getStockHistory(symbol);
         res.json(data);
     } catch (error) {
         res.status(error.status || 503).json({ error: 'Price feeds are temporarily unavailable for this listing. Try again shortly.' });
