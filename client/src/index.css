@@ -2688,6 +2688,32 @@ button {
   color: var(--text-secondary);
 }
 
+.paper-history {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.paper-history > summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.paper-history > summary {
+  font-size: 0.82rem;
+}
+
+.paper-history-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.paper-history-pagination {
+  margin-top: 8px;
+}
+
 .order-presets-row {
   display: flex;
   gap: 6px;

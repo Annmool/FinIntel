@@ -122,3 +122,25 @@ test('shows last-known marks and leaves missing holdings unvalued', async () => 
   expect(within(missing).getByText('Quote unavailable')).toBeInTheDocument();
   expect(within(missing).queryByText(/0\.0%/)).not.toBeInTheDocument();
 });
+
+test('shows the executed paper trade and pages to older orders', async () => {
+  const fill = {
+    id: 'recent-order', side: 'buy', symbol: 'TCS.NS', quantity: 1, currency: 'INR', executedPrice: 3300,
+    usdAmount: 33, fxRate: 100, fxSource: 'Fixture FX', quoteSource: 'Fixture quote', filledAt: '2026-11-20T12:00:00.000Z'
+  };
+  const get = axios.get.getMockImplementation();
+  axios.get.mockImplementation((url, config) => url.endsWith('/api/paper-history')
+    ? Promise.resolve({ data: config.params.cursor
+      ? { trades: [{ ...fill, side: 'sell', id: 'old-order' }], nextCursor: null }
+      : { trades: [fill], nextCursor: 'older' } })
+    : get(url, config));
+  render(<App />);
+  const history = screen.getByText('Paper trade history').closest('details');
+  history.open = true;
+  fireEvent(history, new Event('toggle'));
+  expect(await screen.findByText('Buy 1 TCS.NS')).toBeInTheDocument();
+  expect(screen.getByText(/1 USD = 100\.00 INR.*Fixture FX/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Older trades' }));
+  expect(await screen.findByText('Sell 1 TCS.NS')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Older trades' })).toBeDisabled();
+});

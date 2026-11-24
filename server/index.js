@@ -12,6 +12,7 @@ const rateLimit = require('express-rate-limit');
 const { createRequireAuth } = require('./middleware/requireAuth');
 const { normalizePaperQuote, marketTimeMs, isRecentMarketTime } = require('./services/paperTrading');
 const { getOrCreateVirtualAccount, settlePaperOrder } = require('./services/paperSettlement');
+const { getPaperHistory } = require('./services/paperHistory');
 const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
@@ -622,6 +623,7 @@ app.get('/api/fundamentals/:symbol', async (req, res) => {
 app.use('/api/watchlist', requireAuth);
 app.use('/api/portfolio', requireAuth);
 app.use('/api/paper-portfolio', requireAuth);
+app.use('/api/paper-history', requireAuth);
 app.use('/api/virtual-account', requireAuth);
 app.use('/api/alerts', requireAuth);
 
@@ -856,6 +858,16 @@ app.get('/api/paper-portfolio/:userId', async (req, res) => {
     if (req.params.userId !== req.user.uid) return res.status(403).json({ error: 'Forbidden.' });
     const holdings = await PaperPortfolio.find({ userId: req.user.uid });
     res.json(holdings);
+});
+
+app.get('/api/paper-history', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+        res.json(await getPaperHistory(req.user.uid, req.query));
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
+        throw error;
+    }
 });
 
 // Paper Trading: Get Balance

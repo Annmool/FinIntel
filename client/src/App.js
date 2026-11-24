@@ -38,6 +38,7 @@ import TickerTape from './TickerTape';
 import QuantLab from './QuantLab';
 import PortfolioStress from './PortfolioStress';
 import MetalsPanel from './MetalsPanel';
+import PaperTradeHistory from './PaperTradeHistory';
 import { calculateRSI } from './utils/indicators';
 import {
   DEFAULT_FX_RATES,
@@ -69,6 +70,7 @@ function App() {
   const [watchlist, setWatchlist] = useState([]);
   const [portfolio, setPortfolio] = useState([]);
   const [paperPortfolio, setPaperPortfolio] = useState([]);
+  const [paperHistoryRefresh, setPaperHistoryRefresh] = useState(0);
   const [alerts, setAlerts] = useState([]);
   const [theme, setTheme] = useState('dark');
   const [briefing, setBriefing] = useState([]);
@@ -607,6 +609,7 @@ function App() {
         if (auth.currentUser?.uid === currUser.uid) {
           fetchVirtualBalance(currUser.uid);
           fetchPaperPortfolio(currUser.uid);
+          setPaperHistoryRefresh(value => value + 1);
         }
         setOrderModal(prev => ({ ...prev, isOpen: false, isSubmitting: false }));
         const verb = side === 'buy' ? 'Bought' : 'Sold';
@@ -1836,6 +1839,7 @@ function App() {
                     </span>
                   </div>
                 )}
+                {user && <PaperTradeHistory key={user.uid} refresh={paperHistoryRefresh} />}
               </div>
             </div>
           )}

@@ -116,7 +116,7 @@ async function settlePaperOrder({ userId, side, symbol, qty, orderId }, { getPap
         fxRate: fx?.providerRates[quote.currency] ?? 1,
         fxSource: fx?.source ?? null
       };
-      await PaperOrder.create([{ _id: key, side, symbol: cleanSymbol, quantity, response: result }], { session });
+      await PaperOrder.create([{ _id: key, userId, side, symbol: cleanSymbol, quantity, response: result }], { session });
       return result;
     });
   } catch (error) {
