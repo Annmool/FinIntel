@@ -14,6 +14,7 @@ const { normalizePaperQuote, marketTimeMs, isRecentMarketTime } = require('./ser
 const { getOrCreateVirtualAccount, settlePaperOrder } = require('./services/paperSettlement');
 const { getPaperHistory } = require('./services/paperHistory');
 const { correctHoldingCost, positiveNumber } = require('./services/holdingCost');
+const { isFreshAlertQuote, recordAlertReceipt } = require('./services/alertReceipts');
 const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
@@ -92,7 +93,6 @@ const quantConcurrencyLimit = (req, res, next) => {
     return next();
 };
 
-const TWELVE_DATA_URL = "https://api.twelvedata.com";
 const FINNHUB_URL = "https://finnhub.io/api/v1";
 
 // --- Currency & FX Rate Dictionaries ---
@@ -295,64 +295,51 @@ const fetchFromYahoo = async (sym) => {
 };
 
 // --- 3. Automated Cron Job for Price Alerts ---
+let checkingAlerts = false;
 cron.schedule('*/5 * * * *', async () => {
+    if (checkingAlerts) return;
+    checkingAlerts = true;
     try {
         const activeAlerts = await Alert.find({ triggered: false });
         if (!activeAlerts || activeAlerts.length === 0) return;
 
-        const uniqueSymbols = [...new Set(activeAlerts.map(a => a.symbol))];
-        const priceMap = {};
+        const uniqueSymbols = new Set(activeAlerts.map(a => a.symbol));
+        const priceMap = new Map();
 
         // 1. Try batch fetch via Yahoo Finance for speed, no rate limit, and full global/NSE support
         try {
-            const yQuotes = await yahooFinance.quote(uniqueSymbols, {}, { validateResult: false });
+            const yQuotes = await yahooFinance.quote([...uniqueSymbols], {}, {
+                validateResult: false, fetchOptions: { signal: AbortSignal.timeout(4500) }
+            });
             if (Array.isArray(yQuotes)) {
                 for (const q of yQuotes) {
-                    if (q && q.symbol && Number.isFinite(q.regularMarketPrice)) {
-                        priceMap[q.symbol] = q.regularMarketPrice;
-                    }
+                    if (!q?.symbol || !uniqueSymbols.has(q.symbol)) continue;
+                    const quote = normalizePaperQuote(q.symbol, q, 'Yahoo Finance');
+                    if (isFreshAlertQuote(quote, Date.now())) priceMap.set(q.symbol, quote);
                 }
             }
-        } catch (yErr) {
-            console.log("Yahoo Alert price check fallback to Twelve Data:", yErr.message);
+        } catch (_) {
+            console.log("Yahoo alert batch unavailable. Trying individual quotes.");
         }
 
-        // 2. For any remaining symbols, query Twelve Data with safe delays
+        // 2. Reuse the verified quote fallback for each missing listing.
         for (const sym of uniqueSymbols) {
-            if (priceMap[sym]) continue;
+            if (priceMap.has(sym)) continue;
             try {
-                let symbol = sym;
-                let exchangeParam = '';
-                if (symbol.includes(':')) {
-                    const parts = symbol.split(':');
-                    symbol = parts[0];
-                    exchangeParam = `&exchange=${parts[1]}`;
-                } else if (symbol.endsWith('.NS')) {
-                    symbol = symbol.replace('.NS', '');
-                    exchangeParam = '&exchange=NSE';
-                }
-                const res = await axios.get(`${TWELVE_DATA_URL}/price?symbol=${symbol}${exchangeParam}&apikey=${process.env.STOCK_API_KEY}`);
-                const price = parseFloat(res.data?.price);
-                if (Number.isFinite(price)) {
-                    priceMap[sym] = price;
-                }
+                const quote = await priceFeeds.getQuote(sym, value => isFreshAlertQuote(value, Date.now()));
+                priceMap.set(sym, quote);
             } catch (_) {}
         }
 
-        // 3. Evaluate alerts against real-time prices
+        // 3. Only one runner may transition an alert and store its receipt.
         for (const alert of activeAlerts) {
-            const currentPrice = priceMap[alert.symbol];
-            if (!Number.isFinite(currentPrice)) continue;
-
-            const isHit = (alert.condition === 'ABOVE' && currentPrice >= alert.targetPrice) ||
-                          (alert.condition === 'BELOW' && currentPrice <= alert.targetPrice);
-            if (isHit) {
-                alert.triggered = true;
-                await alert.save();
-                console.log(`🔔 Alert Triggered: ${alert.symbol} at ${currentPrice} (${alert.condition} ${alert.targetPrice})`);
-            }
+            await recordAlertReceipt(Alert, alert, priceMap.get(alert.symbol));
         }
-    } catch (e) { console.error("Alert Cron Error:", e.message); }
+    } catch (e) {
+        console.error("Alert Cron Error:", e.message);
+    } finally {
+        checkingAlerts = false;
+    }
 });
 
 // --- 4. Main API Routes ---
@@ -1245,13 +1232,18 @@ app.get('/api/alerts/:userId', async (req, res) => {
 });
 
 app.post('/api/alerts', async (req, res) => {
-    const { symbol, targetPrice, condition } = req.body;
-    const parsedTarget = parseFloat(targetPrice);
-    if (!symbol || typeof symbol !== 'string' || !Number.isFinite(parsedTarget) || parsedTarget <= 0 || !['ABOVE', 'BELOW'].includes(condition)) {
+    const { symbol, targetPrice, condition, currency } = req.body ?? {};
+    const cleanSym = typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+    const parsedTarget = positiveNumber(targetPrice);
+    const currencyCode = currency === 'GBp' ? 'GBX' : typeof currency === 'string' ? currency.trim().toUpperCase() : '';
+    if (!stockSymbolPattern.test(cleanSym) || !Number.isFinite(parsedTarget) || !['ABOVE', 'BELOW'].includes(condition) ||
+        (currency !== undefined && !/^[A-Z]{3}$/.test(currencyCode))) {
         return res.status(400).json({ error: "Invalid alert parameters. Provide a valid symbol, target price, and condition (ABOVE/BELOW)." });
     }
-    const cleanSym = symbol.trim().toUpperCase();
-    const newAlert = new Alert({ userId: req.user.uid, symbol: cleanSym, targetPrice: parsedTarget, condition, triggered: false });
+    const newAlert = new Alert({
+        userId: req.user.uid, symbol: cleanSym, targetPrice: parsedTarget, condition,
+        currency: currencyCode || undefined, triggered: false
+    });
     await newAlert.save();
     res.json(newAlert);
 });

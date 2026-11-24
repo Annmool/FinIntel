@@ -6,9 +6,11 @@ const PaperOrder = require('../models/PaperOrder');
 const PaperPortfolio = require('../models/PaperPortfolio');
 const VirtualAccount = require('../models/VirtualAccount');
 const Portfolio = require('../models/Portfolio');
+const Alert = require('../models/Alert');
 const { settlePaperOrder } = require('../services/paperSettlement');
 const { getPaperHistory } = require('../services/paperHistory');
 const { correctHoldingCost } = require('../services/holdingCost');
+const { recordAlertReceipt } = require('../services/alertReceipts');
 
 const uri = process.env.PAPER_TEST_MONGO_URI || 'mongodb://127.0.0.1:27018/?replicaSet=rs0';
 const dbName = `finintel_test_${randomUUID().replace(/-/g, '')}`;
@@ -84,6 +86,19 @@ test('a legacy holding supports one cost correction from two concurrent editors'
   assert.equal(holding.costCorrections.length, 1);
   assert.equal(holding.costCorrections[0].previousPrice, 3000);
   assert.equal(holding.costCorrections[0].price, holding.price);
+});
+
+test('overlapping alert workers save one durable trigger receipt', async () => {
+  const pending = await Alert.create({ userId: randomUUID(), symbol: 'TCS.NS', currency: 'INR', targetPrice: 3500, condition: 'ABOVE' });
+  const now = pending.createdAt.getTime() + 60_000;
+  const quote = { price: 3520, currency: 'INR', source: 'Fixture', sourceUpdatedAt: new Date(now).toISOString() };
+  const results = await Promise.all([recordAlertReceipt(Alert, pending, quote, now), recordAlertReceipt(Alert, pending, quote, now)]);
+  assert.equal(results.filter(Boolean).length, 1);
+  const triggered = await Alert.findById(pending._id).lean();
+  assert.equal(triggered.triggered, true);
+  assert.equal(triggered.receipt.price, 3520);
+  assert.equal(triggered.receipt.source, 'Fixture');
+  assert.equal(triggered.receipt.quoteTime.toISOString(), quote.sourceUpdatedAt);
 });
 
 function buy(userId, overrides = {}, providers = market) {

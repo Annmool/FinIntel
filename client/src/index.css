@@ -2695,7 +2695,8 @@ button {
 }
 
 .paper-history > summary,
-.cost-corrections > summary {
+.cost-corrections > summary,
+.trigger-receipt > summary {
   cursor: pointer;
   color: var(--accent);
 }
@@ -2703,6 +2704,11 @@ button {
 .paper-history > summary,
 .cost-corrections > summary {
   font-size: 0.82rem;
+}
+
+.trigger-receipt {
+  margin-top: 4px;
+  font-size: 0.68rem;
 }
 
 .holding-actions,

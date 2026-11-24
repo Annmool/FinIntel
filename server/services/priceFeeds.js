@@ -98,10 +98,10 @@ function createPriceFeeds({ http, fetchYahooHistory, fetchYahooQuote, twelveKeys
     throw Object.assign(new Error('Price feeds are temporarily unavailable for this listing. Try again shortly.'), { status: 503 });
   }
 
-  async function getQuote(symbol) {
+  async function getQuote(symbol, accept = () => true) {
     try {
       const quote = await fetchYahooQuote(symbol);
-      if (quote) return quote;
+      if (quote && accept(quote)) return quote;
     } catch (_) { /* A verified Twelve Data quote can fill the request. */ }
     const mapping = twelveSymbol(symbol);
     if (/^[A-Z][A-Z0-9-]{0,23}$/.test(mapping.symbol)) {
@@ -120,7 +120,7 @@ function createPriceFeeds({ http, fetchYahooHistory, fetchYahooQuote, twelveKeys
           const quote = normalizePaperQuote(mapping.symbol, {
             symbol: data.symbol, currency: data.currency, regularMarketPrice: data.close, regularMarketTime: data.timestamp
           }, 'Twelve Data');
-          if (!quote) throw new Error('Quote is incomplete or stale');
+          if (!quote || !accept(quote)) throw new Error('Quote is incomplete or stale');
           return quote;
         });
       } catch (_) { /* Never accept a client-supplied execution price. */ }

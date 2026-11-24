@@ -154,7 +154,6 @@ function App() {
   const searchInputRef = useRef(null);
   const searchContainerRef = useRef(null);
 
-  const getCurrency = (symOrCode) => getCurrencySymbol(symOrCode);
   const stockCurrency = data?.meta?.currency || inferCurrencyFromSymbol(data?.meta?.symbol || symbol);
   const currencySymbol = getCurrencySymbol(stockCurrency);
   const baseCurSymbol = getCurrencySymbol(baseCurrency);
@@ -642,7 +641,8 @@ function App() {
           userId: currUser.uid,
           symbol: orderModal.symbol,
           targetPrice: parsedTarget,
-          condition: orderModal.alertCondition
+          condition: orderModal.alertCondition,
+          currency: getCurrencyCode(orderModal.currency)
         });
         fetchAlerts(currUser.uid);
         setOrderModal(prev => ({ ...prev, isOpen: false, isSubmitting: false }));
@@ -1015,8 +1015,19 @@ function App() {
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <span className="sidebar-item-sym" style={{ fontSize: '0.78rem' }}>{a.symbol}</span>
                   <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>
-                    {a.condition} {getCurrency(a.symbol)}{formatPrice(a.targetPrice, a.symbol)} · {a.triggered ? 'Triggered' : 'Watching'}
+                    {a.condition} {getCurrencySymbol(a.currency || a.receipt?.currency || inferCurrencyFromSymbol(a.symbol))}
+                    {formatPrice(a.targetPrice, a.currency || a.receipt?.currency || inferCurrencyFromSymbol(a.symbol))} · {a.triggered ? 'Triggered' : 'Watching'}
                   </span>
+                  {a.triggered && a.receipt && (
+                    <details className="trigger-receipt">
+                      <summary>Trigger details</summary>
+                      <small className="receipt-detail">
+                        Observed {getCurrencySymbol(a.receipt.currency)}{formatPrice(a.receipt.price, a.receipt.currency)} · {a.receipt.source}
+                      </small>
+                      <small className="receipt-detail">Quote time · {new Date(a.receipt.quoteTime).toLocaleString()}</small>
+                      <small className="receipt-detail">Recorded · {new Date(a.receipt.triggeredAt).toLocaleString()}</small>
+                    </details>
+                  )}
                 </div>
                 <button
                   className="sidebar-item-del"

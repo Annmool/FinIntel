@@ -63,7 +63,10 @@ function normalizePaperQuote(requestedSymbol, quote, source) {
   if (!Number.isFinite(price) || price <= 0 || typeof currency !== 'string' ||
       !/^[A-Z]{3}$/.test(currency) || !isRecentMarketTime(time)) return null;
 
-  return { price, currency, source, sourceUpdatedAt: new Date(time).toISOString() };
+  return {
+    price, currency, source, sourceUpdatedAt: new Date(time).toISOString(),
+    ...(quotedInPence ? { originalUnit: 'GBX' } : {})
+  };
 }
 
 function marketTimeMs(timestamp) {
