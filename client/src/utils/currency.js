@@ -4,6 +4,7 @@ export const CURRENCY_SYMBOLS = {
   KRW: '₩',
   EUR: '€',
   GBP: '£',
+  GBX: 'GBp ',
   JPY: '¥',
   AED: 'AED ',
   SAR: 'SAR ',
@@ -104,6 +105,7 @@ export function getCurrencyCode(itemOrSymbol) {
   if (!itemOrSymbol) return 'USD';
   if (typeof itemOrSymbol === 'string') {
     const upper = itemOrSymbol.trim().toUpperCase();
+    if (itemOrSymbol.trim() === 'GBp') return 'GBX';
     if (CURRENCY_SYMBOLS[upper]) return upper;
     // If it's already a 3-letter currency code (e.g. AED, SAR, USD) without a stock exchange dot, preserve it
     if (/^[A-Z]{3}$/.test(upper) && !upper.includes('.')) return upper;
@@ -112,10 +114,12 @@ export function getCurrencyCode(itemOrSymbol) {
   if (typeof itemOrSymbol === 'object') {
     if (itemOrSymbol.currency) {
       const cur = itemOrSymbol.currency.trim().toUpperCase();
+      if (itemOrSymbol.currency.trim() === 'GBp') return 'GBX';
       if (cur) return cur;
     }
     if (itemOrSymbol.meta?.currency) {
       const cur = itemOrSymbol.meta.currency.trim().toUpperCase();
+      if (itemOrSymbol.meta.currency.trim() === 'GBp') return 'GBX';
       if (cur) return cur;
     }
     if (itemOrSymbol.symbol) return inferCurrencyFromSymbol(itemOrSymbol.symbol);
@@ -162,8 +166,8 @@ export function convertPrice(amount, fromCurrency, toCurrency, fxRates = DEFAULT
   const to = getCurrencyCode(toCurrency);
   if (from === to) return num;
   const rates = { ...DEFAULT_FX_RATES, ...fxRates };
-  const fromRate = rates[from] || 1.0;
-  const toRate = rates[to] || 1.0;
+  const fromRate = from === 'GBX' ? rates.GBP * 100 : rates[from] || 1.0;
+  const toRate = to === 'GBX' ? rates.GBP * 100 : rates[to] || 1.0;
   // Convert from -> USD -> to
   const inUsd = num / fromRate;
   return inUsd * toRate;

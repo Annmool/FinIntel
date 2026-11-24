@@ -5,9 +5,9 @@ export const calculateRSI = (data) => {
     let gains = 0, losses = 0;
 
     for (let i = 0; i < 14; i++) {
-        const c1 = parseFloat(data[i]?.close);
-        const c2 = parseFloat(data[i + 1]?.close);
-        if (!Number.isFinite(c1) || !Number.isFinite(c2)) continue;
+        const c1 = Number(data[i]?.close);
+        const c2 = Number(data[i + 1]?.close);
+        if (!Number.isFinite(c1) || !Number.isFinite(c2) || c1 <= 0 || c2 <= 0) return null;
         const diff = c1 - c2;
         if (diff > 0) gains += diff;
         else losses += Math.abs(diff);
@@ -22,7 +22,7 @@ export const calculateRSI = (data) => {
     const rs = avgGain / avgLoss;
     const rsi = 100 - (100 / (1 + rs));
 
-    return Number.isFinite(rsi) ? rsi.toFixed(2) : "50.00";
+    return Number.isFinite(rsi) ? rsi.toFixed(2) : null;
 };
 
 export const getRecommendation = (rsi) => {
@@ -34,22 +34,14 @@ export const getRecommendation = (rsi) => {
     return { action: "HOLD", Color: "#ffa726", msg: "Neutral Momentum" };
 };
 
+// Chart candles are ordered from oldest to newest.
 export const calculateMA = (data, period = 20) => {
     if (!data || !Array.isArray(data) || data.length < period) return [];
     let maData = [];
     for (let i = 0; i <= data.length - period; i++) {
         const slice = data.slice(i, i + period);
-        const validValues = slice.map(val => parseFloat(val?.close)).filter(Number.isFinite);
-        if (validValues.length < period) continue;
-        const sum = validValues.reduce((acc, val) => acc + val, 0);
-        const rawDate = data[i]?.datetime;
-        const timeStr = rawDate ? String(rawDate).split(" ")[0] : null;
-        if (timeStr) {
-            maData.push({
-                time: timeStr,
-                value: sum / period
-            });
-        }
+        const sum = slice.reduce((acc, candle) => acc + candle.close, 0);
+        maData.push({ time: data[i + period - 1].time, value: sum / period });
     }
-    return maData.reverse(); // Match chart order
+    return maData;
 };

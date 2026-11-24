@@ -5,6 +5,7 @@ const PortfolioSchema = new mongoose.Schema({
     symbol: { type: String, required: true },
     qty: { type: Number, required: true },
     price: { type: Number, required: true },
+    currency: { type: String },
     createdAt: { type: Date, default: Date.now }
 });
 

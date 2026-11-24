@@ -42,6 +42,7 @@ import { calculateRSI } from './utils/indicators';
 import {
   DEFAULT_FX_RATES,
   inferCurrencyFromSymbol,
+  getCurrencyCode,
   getCurrencySymbol,
   formatPrice,
   convertPrice,
@@ -56,6 +57,7 @@ const UPTIMEROBOT_STATUS_URL = 'https://dashboard.uptimerobot.com/monitors/80312
 function App() {
   const pendingPaperOrder = useRef(null);
   const submittingOrder = useRef(false);
+  const balanceRequest = useRef(0);
   const stockRequest = useRef(0);
   const stockController = useRef(null);
   const [user, setUser] = useState(null);
@@ -63,19 +65,22 @@ function App() {
   const [suggestions, setSuggestions] = useState([]);
   const [data, setData] = useState(null);
   const [news, setNews] = useState([]);
+  const [newsLoading, setNewsLoading] = useState(false);
   const [watchlist, setWatchlist] = useState([]);
   const [portfolio, setPortfolio] = useState([]);
   const [paperPortfolio, setPaperPortfolio] = useState([]);
   const [alerts, setAlerts] = useState([]);
   const [theme, setTheme] = useState('dark');
   const [briefing, setBriefing] = useState([]);
+  const [briefingLoading, setBriefingLoading] = useState(true);
   const [loading, setLoading] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [appError, setAppError] = useState('');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [virtualBalance, setVirtualBalance] = useState(100000);
+  const [virtualBalance, setVirtualBalance] = useState(null);
+  const [balanceLoading, setBalanceLoading] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
   const [isQuantLabOpen, setIsQuantLabOpen] = useState(false);
@@ -227,14 +232,22 @@ function App() {
       });
   }, []);
 
-  const fetchVirtualBalance = async (uid) => {
+  const fetchVirtualBalance = useCallback(async (uid) => {
+    const requestId = ++balanceRequest.current;
+    const isCurrent = () => auth.currentUser?.uid === uid && requestId === balanceRequest.current;
+    setBalanceLoading(true);
     try {
       const res = await axios.get(`${API_URL}/api/virtual-account/${uid}`);
-      if (auth.currentUser?.uid === uid) setVirtualBalance(res.data.balance);
-    } catch (e) {
-      console.error('Error fetching balance');
+      if (isCurrent()) {
+        const balance = res.data?.balance;
+        setVirtualBalance(Number.isFinite(balance) && balance >= 0 ? balance : null);
+      }
+    } catch (_) {
+      if (isCurrent()) setVirtualBalance(null);
+    } finally {
+      if (isCurrent()) setBalanceLoading(false);
     }
-  };
+  }, []);
 
   const fetchPortfolioMarks = useCallback((holdings, uid) => {
     for (const symbol of new Set(holdings.map(holding => holding.symbol))) {
@@ -287,13 +300,15 @@ function App() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
+      balanceRequest.current += 1;
       setUser(u);
       setWatchlist([]);
       setPortfolio([]);
       setPaperPortfolio([]);
       setAlerts([]);
       setPortfolioPrices({});
-      setVirtualBalance(100000);
+      setVirtualBalance(null);
+      setBalanceLoading(false);
       if (u) {
         fetchWatchlist(u.uid);
         fetchPortfolio(u.uid);
@@ -312,7 +327,8 @@ function App() {
             setBriefing(res.data.news);
           }
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => setBriefingLoading(false));
     };
 
     fetchFxRate(false);
@@ -330,7 +346,7 @@ function App() {
       clearInterval(alertsInterval);
       clearInterval(fxInterval);
     };
-  }, [fetchFxRate, fetchPaperPortfolio, fetchPortfolio]);
+  }, [fetchFxRate, fetchPaperPortfolio, fetchPortfolio, fetchVirtualBalance]);
 
   // Autocomplete Logic
   useEffect(() => {
@@ -378,11 +394,14 @@ function App() {
     const config = { signal: controller.signal, timeout: 25000 };
     setShowSuggestions(false);
     setSuggestions([]);
+    setSymbol(requested);
     setLoading(true);
     setAppError('');
     setAiAnalysis('');
+    setAiLoading(false);
     setData(null);
     setNews([]);
+    setNewsLoading(true);
     setActiveTab('markets');
     try {
       let target = requested;
@@ -404,7 +423,9 @@ function App() {
       // Optional panels populate independently so news cannot delay a usable chart.
       axios.get(`${API_URL}/api/news/${encodeURIComponent(target)}`, config).then(({ data }) => {
         if (!controller.signal.aborted && requestId === stockRequest.current) setNews(Array.isArray(data) ? data : []);
-      }).catch(() => {});
+      }).catch(() => {}).finally(() => {
+        if (!controller.signal.aborted && requestId === stockRequest.current) setNewsLoading(false);
+      });
       axios.get(`${API_URL}/api/fundamentals/${encodeURIComponent(target)}`, config).then(({ data }) => {
         if (!controller.signal.aborted && requestId === stockRequest.current) {
           setData(previous => previous ? { ...previous, fundamentals: data || {} } : previous);
@@ -413,7 +434,6 @@ function App() {
     } catch (error) {
       if (!controller.signal.aborted && requestId === stockRequest.current) {
         setAppError(error.response?.data?.error || 'The market feed is unavailable. Please try again.');
-        setActiveTab('overview');
       }
     } finally {
       if (!controller.signal.aborted && requestId === stockRequest.current) setLoading(false);
@@ -493,6 +513,7 @@ function App() {
         symbol: currentSymbol,
         price: priceNative,
         currency: stockCur,
+        costPrice: '',
         sharesHeld: 0,
         qty: 1,
         alertCondition: 'ABOVE',
@@ -559,16 +580,16 @@ function App() {
         const verb = side === 'buy' ? 'Bought' : 'Sold';
         showToast(`${verb} ${qty} ${orderModal.symbol} @ ${getCurrencySymbol(fill.currency)}${formatPrice(fill.executedPrice, fill.currency)} (${fill.quoteSource})`);
       } else if (orderModal.type === 'PORTFOLIO') {
-        const qty = parseFloat(orderModal.qty);
-        if (!qty || qty <= 0) {
-          setOrderModal(prev => ({ ...prev, isSubmitting: false, error: 'Please enter a valid share quantity.' }));
-          return;
-        }
+        const qty = Number(orderModal.qty);
+        const price = Number(orderModal.costPrice);
+        if (!Number.isFinite(qty) || qty <= 0) throw new Error('Please enter a valid share quantity.');
+        if (!Number.isFinite(price) || price <= 0) throw new Error('Please enter a positive purchase price per share.');
         await axios.post(`${API_URL}/api/portfolio`, {
           userId: currUser.uid,
           symbol: orderModal.symbol,
           qty,
-          price: orderModal.price
+          price,
+          currency: getCurrencyCode(orderModal.currency)
         });
         fetchPortfolio(currUser.uid);
         setOrderModal(prev => ({ ...prev, isOpen: false, isSubmitting: false }));
@@ -598,6 +619,7 @@ function App() {
   };
 
   const getAIInsight = async () => {
+    const requestId = stockRequest.current;
     setAiLoading(true);
     try {
       const stockCur = data?.meta?.currency || inferCurrencyFromSymbol(data?.meta?.symbol);
@@ -606,32 +628,42 @@ function App() {
         price: data?.values[0].close,
         currency: stockCur,
         rsi: calculateRSI(data.values),
-        sentiment: !news.length ? 'Unavailable' : avgSent === 0 ? 'Neutral' : avgSent > 0 ? 'Bullish' : 'Bearish',
+        sentiment: headlineSentiment || 'Unavailable',
         news: news
       });
-      setAiAnalysis((res.data.source === 'indicator' ? 'Indicator summary · ' : 'AI-generated summary · ') + res.data.analysis);
+      if (requestId === stockRequest.current) {
+        setAiAnalysis((res.data.source === 'indicator' ? 'Indicator summary · ' : 'AI-generated summary · ') + res.data.analysis);
+      }
     } catch (e) {
-      setAiAnalysis('Analysis generation failed. Check API connectivity.');
+      if (requestId === stockRequest.current) setAiAnalysis('Analysis generation failed. Check API connectivity.');
+    } finally {
+      if (requestId === stockRequest.current) setAiLoading(false);
     }
-    setAiLoading(false);
   };
 
   const rsiScore = data ? calculateRSI(data.values) : null;
-  const avgSent = news.length > 0 ? news.reduce((acc, curr) => acc + (curr.sentimentScore || 0), 0) / news.length : 0;
+  const headlineScores = news.map(article => article.sentimentScore).filter(Number.isFinite);
+  const headlineScore = headlineScores.reduce((total, score) => total + score, 0);
+  const headlineSentiment = headlineScores.length ? (headlineScore === 0 ? 'Neutral' : headlineScore > 0 ? 'Bullish' : 'Bearish') : null;
   const getVerdict = (rsi) => {
     const v = parseFloat(rsi);
     if (v < 35) return { label: 'OVERSOLD', color: 'var(--success)' };
     if (v > 65) return { label: 'OVERBOUGHT', color: 'var(--danger)' };
     return { label: 'NEUTRAL', color: 'var(--warning)' };
   };
-  const verdict = rsiScore ? getVerdict(rsiScore) : { label: 'NEUTRAL', color: 'var(--text-tertiary)' };
+  const verdict = rsiScore ? getVerdict(rsiScore) : { label: 'Unavailable', color: 'var(--text-tertiary)' };
 
   // Calculate Real Portfolio Metrics with Multi-Currency FX Engine
   const portfolioHoldingsWithPnL = portfolio.map((p) => {
-    const nativeCurrency = p.currency || inferCurrencyFromSymbol(p.symbol);
+    const mark = portfolioPrices[p.symbol];
+    const markCurrency = mark ? getCurrencyCode(mark.currency) : null;
+    const nativeCurrency = p.currency || (markCurrency === 'GBX' ? 'GBX' : inferCurrencyFromSymbol(p.symbol));
     const nativeSymbol = getCurrencySymbol(nativeCurrency);
 
-    const currPrice = portfolioPrices[p.symbol]?.price ?? NaN;
+    const matchingQuote = markCurrency === nativeCurrency ||
+      (markCurrency === 'GBP' && nativeCurrency === 'GBX') ||
+      (markCurrency === 'GBX' && nativeCurrency === 'GBP');
+    const currPrice = matchingQuote ? convertPrice(mark.price, markCurrency, nativeCurrency, fxRates) : NaN;
     const entryPrice = parseFloat(p.price || 0);
 
     const costBasisNative = p.qty * entryPrice;
@@ -639,11 +671,17 @@ function App() {
     const pnlNative = currentValNative - costBasisNative;
     const pnlPercent = costBasisNative > 0 ? (pnlNative / costBasisNative) * 100 : NaN;
 
-    // Convert values to both USD and INR using the global FX engine
-    const currentValUSD = Number.isFinite(currPrice) ? convertPrice(currentValNative, nativeCurrency, 'USD', fxRates) : NaN;
-    const currentValINR = Number.isFinite(currPrice) ? convertPrice(currentValNative, nativeCurrency, 'INR', fxRates) : NaN;
-    const costBasisUSD = convertPrice(costBasisNative, nativeCurrency, 'USD', fxRates);
-    const costBasisINR = convertPrice(costBasisNative, nativeCurrency, 'INR', fxRates);
+    const fxCurrency = nativeCurrency === 'GBX' ? 'GBP' : nativeCurrency;
+    const toDisplayCurrency = (amount, currency) => {
+      if (!Number.isFinite(amount)) return NaN;
+      if (nativeCurrency === currency) return amount;
+      if (!(fxRates[fxCurrency] > 0) || !(fxRates[currency] > 0)) return NaN;
+      return convertPrice(amount, nativeCurrency, currency, fxRates);
+    };
+    const currentValUSD = toDisplayCurrency(currentValNative, 'USD');
+    const currentValINR = toDisplayCurrency(currentValNative, 'INR');
+    const costBasisUSD = toDisplayCurrency(costBasisNative, 'USD');
+    const costBasisINR = toDisplayCurrency(costBasisNative, 'INR');
     const pnlUSD = currentValUSD - costBasisUSD;
     const pnlINR = currentValINR - costBasisINR;
 
@@ -683,7 +721,9 @@ function App() {
 
   // Secondary alternative currency representation
   const totalPortfolioValueAlt = Number.isFinite(totalPortfolioValue) ? convertPrice(totalPortfolioValue, baseCurrency, altCurrency, fxRates) : NaN;
-  const virtualBalanceBase = convertPrice(virtualBalance, 'USD', baseCurrency, fxRates);
+  const balanceUnavailable = balanceLoading || virtualBalance === null;
+  const balanceStatus = balanceLoading ? 'Loading…' : user ? 'Unavailable' : 'Sign in to view';
+  const virtualBalanceBase = balanceUnavailable ? null : convertPrice(virtualBalance, 'USD', baseCurrency, fxRates);
 
   // Export Portfolio
   const exportPortfolio = async (type) => {
@@ -1087,12 +1127,8 @@ function App() {
             </div>
 
             <div className="topbar-status-group">
-              <div className="market-live-badge">
-                <span className="status-dot"></span>
-                <span>Feed Live</span>
-              </div>
               <div className="paper-capital-badge font-mono">
-                ${virtualBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Sim Cash
+                {balanceUnavailable ? `Sim Cash · ${balanceStatus}` : `${getCurrencySymbol('USD')}${formatPrice(virtualBalance, 'USD')} Sim Cash`}
               </div>
               <button
                 className="btn btn-secondary btn-sm topbar-quant-btn"
@@ -1106,7 +1142,7 @@ function App() {
           </div>
 
           {/* Error Banner */}
-          {appError && (
+          {activeTab === 'markets' && appError && (
             <div style={{ background: 'var(--danger-bg)', border: '1px solid var(--danger-border)', padding: '12px 16px', borderRadius: 'var(--radius-sm)', color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.84rem' }}>
               <AlertCircle size={16} />
               <span>{appError}</span>
@@ -1141,12 +1177,13 @@ function App() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span className="term-badge neutral">
-                    <span className="status-dot"></span> Live Wire ({briefing.length} Feeds)
+                    {briefing.length} Headlines
                   </span>
                 </div>
               </div>
 
 
+              {!briefing.length && <p role="status">{briefingLoading ? 'Loading market headlines…' : 'Market headlines unavailable.'}</p>}
               {/* News Articles Grid */}
               <div className="news-feed-grid">
                 {briefing.map((n, i) => (
@@ -1247,16 +1284,16 @@ function App() {
                 <div className="stock-stats-grid">
                   <div className="stock-stat-box">
                     <span className="stock-stat-label">RSI (14)</span>
-                    <span className="stock-stat-val font-mono">{rsiScore || '--'}</span>
+                    <span className="stock-stat-val font-mono">{rsiScore || 'Unavailable'}</span>
                   </div>
                   <div className="stock-stat-box">
                     <span className="stock-stat-label">News Sentiment</span>
-                    <span className={`stock-stat-val font-mono ${avgSent >= 0 ? 'pos' : 'neg'}`}>
-                      {avgSent >= 0 ? 'Bullish' : 'Bearish'}
+                    <span className={`stock-stat-val font-mono ${headlineScore > 0 ? 'pos' : headlineScore < 0 ? 'neg' : ''}`}>
+                      {newsLoading ? 'Loading…' : headlineSentiment || 'Unavailable'}
                     </span>
                   </div>
                   <div className="stock-stat-box">
-                    <span className="stock-stat-label">Model Signal</span>
+                    <span className="stock-stat-label">RSI Signal</span>
                     <span className="stock-stat-val font-mono" style={{ color: verdict.color }}>
                       {verdict.label}
                     </span>
@@ -1343,11 +1380,21 @@ function App() {
                   </div>
                 ) : (
                   <span style={{ fontSize: '0.82rem', color: 'var(--text-tertiary)' }}>
-                    No recent filings found for this instrument.
+                    {newsLoading ? 'Loading headlines…' : 'No recent headlines available.'}
                   </span>
                 )}
               </div>
             </div>
+          ) : activeTab === 'markets' ? (
+            <section className="terminal-panel">
+              <h2 className="panel-title">Markets &amp; Charts</h2>
+              <p className="panel-subtitle">Search by company name or ticker to open a price chart.</p>
+              {appError && (
+                <button className="btn btn-secondary btn-sm" onClick={() => fetchStockData(symbol)}>
+                  Retry lookup
+                </button>
+              )}
+            </section>
           ) : (
             /* ==========================================================================
                OVERVIEW DASHBOARD: The 5 Core Investor Questions Answered
@@ -1427,7 +1474,7 @@ function App() {
                   <div className="summary-metric-card">
                     <span className="summary-metric-label">Cost Basis ({baseCurrency})</span>
                     <span className="summary-metric-value">
-                      {baseCurSymbol}{totalCostBasis.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {Number.isFinite(totalCostBasis) ? `${baseCurSymbol}${formatPrice(totalCostBasis, baseCurrency)}` : 'Unavailable'}
                     </span>
                     <span className="summary-metric-sub neutral">
                       {portfolio.length} Active Positions
@@ -1437,10 +1484,10 @@ function App() {
                   <div className="summary-metric-card">
                     <span className="summary-metric-label">Virtual Buying Power</span>
                     <span className="summary-metric-value" style={{ color: 'var(--accent)' }}>
-                      {baseCurSymbol}{virtualBalanceBase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {balanceUnavailable ? '—' : `${baseCurSymbol}${formatPrice(virtualBalanceBase, baseCurrency)}`}
                     </span>
                     <span className="summary-metric-sub neutral">
-                      {baseCurrency === 'INR' ? `$${virtualBalance.toFixed(2)} USD Paper Capital` : 'Paper Simulator Capital'}
+                      {balanceUnavailable ? balanceStatus : baseCurrency === 'INR' ? `$${virtualBalance.toFixed(2)} USD Paper Capital` : 'Paper Simulator Capital'}
                     </span>
                   </div>
 
@@ -1676,7 +1723,7 @@ function App() {
                   </div>
                 ) : (
                   <div style={{ padding: '24px 0', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.82rem' }}>
-                    Connecting to institutional market news stream...
+                    {briefingLoading ? 'Loading market headlines…' : 'Market headlines unavailable.'}
                   </div>
                 )}
               </div>
@@ -1689,7 +1736,8 @@ function App() {
                     Simulated Paper Positions
                   </h3>
                   <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                    ${virtualBalance.toFixed(2)} USD Cash{baseCurrency === 'INR' ? ` (≈ ₹${(virtualBalance * fxRate).toLocaleString(undefined, { maximumFractionDigits: 0 })})` : ''}
+                    {balanceUnavailable ? balanceStatus : `$${virtualBalance.toFixed(2)} USD Cash`}
+                    {!balanceUnavailable && baseCurrency === 'INR' ? ` (≈ ₹${(virtualBalance * fxRate).toLocaleString(undefined, { maximumFractionDigits: 0 })})` : ''}
                   </span>
                 </div>
 
@@ -1798,7 +1846,7 @@ function App() {
                     <>
                       <span className="order-info-label">Available Sim Cash</span>
                       <span className="order-balance-val font-mono">
-                        ${virtualBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {balanceUnavailable ? balanceStatus : `$${formatPrice(virtualBalance, 'USD')}`}
                       </span>
                     </>
                   )}
@@ -1811,6 +1859,25 @@ function App() {
               </div>
 
               {/* Input fields based on orderModal.type */}
+              {orderModal.type === 'PORTFOLIO' && (
+                <div className="order-input-group">
+                  <label className="order-input-label" htmlFor="holding-cost-price">
+                    Purchase Price per Share ({orderModal.currency})
+                  </label>
+                  <div className="order-qty-row">
+                    <input
+                      id="holding-cost-price"
+                      type="number"
+                      step="any"
+                      className="order-number-input font-mono"
+                      value={orderModal.costPrice}
+                      onChange={(e) => setOrderModal(prev => ({ ...prev, costPrice: e.target.value, error: '' }))}
+                      placeholder="Enter what you paid"
+                      required
+                    />
+                  </div>
+                </div>
+              )}
               {orderModal.type === 'ALERT' ? (
                 <div className="order-input-group">
                   <label className="order-input-label">Alert Trigger Condition</label>
@@ -1894,6 +1961,7 @@ function App() {
                       <button
                         type="button"
                         className="order-preset-pill max-btn"
+                        disabled={balanceUnavailable}
                         onClick={() => {
                           const priceUsd = convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates);
                           const maxShares = priceUsd > 0 ? Math.floor(virtualBalance / priceUsd) : 0;
@@ -1921,7 +1989,7 @@ function App() {
                 const parsedQty = parseFloat(orderModal.qty) || 0;
                 const totalNative = parsedQty * orderModal.price;
                 const totalUsd = convertPrice(totalNative, orderModal.currency, 'USD', fxRates);
-                const isInsufficient = orderModal.type === 'BUY' && totalUsd > virtualBalance;
+                const isInsufficient = !balanceUnavailable && orderModal.type === 'BUY' && totalUsd > virtualBalance;
                 const isOverSelling = orderModal.type === 'SELL' && parsedQty > orderModal.sharesHeld;
                 const remainingCash = orderModal.type === 'BUY' ? virtualBalance - totalUsd : virtualBalance + totalUsd;
 
@@ -1942,7 +2010,7 @@ function App() {
                     <div className="order-calc-row">
                       <span className="order-calc-label">Estimated Cash Balance</span>
                       <span className={`order-calc-val font-mono ${isInsufficient ? 'neg' : ''}`}>
-                        ${Math.max(0, remainingCash).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                        {balanceUnavailable ? balanceStatus : `$${formatPrice(Math.max(0, remainingCash), 'USD')} USD`}
                       </span>
                     </div>
                     <p className="order-calc-label">The fill uses a recent server-verified quote.</p>
@@ -1982,6 +2050,7 @@ function App() {
                 className={`btn ${orderModal.type === 'BUY' ? 'btn-primary' : orderModal.type === 'SELL' ? 'btn-danger' : 'btn-primary'}`}
                 disabled={
                   orderModal.isSubmitting ||
+                  (orderModal.type === 'PORTFOLIO' && (!Number.isFinite(Number(orderModal.costPrice)) || Number(orderModal.costPrice) <= 0)) ||
                   (orderModal.type === 'ALERT' && (!parseFloat(orderModal.targetPrice) || parseFloat(orderModal.targetPrice) <= 0)) ||
                   (orderModal.type !== 'ALERT' && (!parseFloat(orderModal.qty) || parseFloat(orderModal.qty) <= 0)) ||
                   (orderModal.type === 'SELL' && (parseFloat(orderModal.qty) || 0) > orderModal.sharesHeld)

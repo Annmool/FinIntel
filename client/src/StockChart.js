@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useRef } from 'react';
 import { createChart, ColorType } from 'lightweight-charts';
+import { calculateMA } from './utils/indicators';
 
 const StockChart = ({ data, theme }) => {
     const chartContainerRef = useRef();
@@ -93,16 +94,7 @@ const StockChart = ({ data, theme }) => {
             title: 'MA (20)',
         });
 
-        const maData = formattedData
-            .map((val, index, arr) => {
-                if (index < 20) return null;
-                const slice = arr.slice(index - 20, index);
-                const avg = slice.reduce((sum, item) => sum + item.close, 0) / 20;
-                return { time: val.time, value: avg };
-            })
-            .filter(item => item !== null);
-
-        maSeries.setData(maData);
+        maSeries.setData(calculateMA(formattedData));
 
         // 6. Final Adjustments
         chart.timeScale().fitContent();

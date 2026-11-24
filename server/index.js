@@ -641,13 +641,25 @@ app.get('/api/portfolio/:userId', async (req, res) => {
 });
 
 app.post('/api/portfolio', async (req, res) => {
-    const { symbol, qty, price } = req.body;
-    const parsedQty = parseFloat(qty);
-    const parsedPrice = parseFloat(price);
-    if (!symbol || typeof symbol !== 'string' || !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
+    const { symbol, qty, price, currency } = req.body ?? {};
+    const cleanSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+    const parsedQty = ['number', 'string'].includes(typeof qty) ? Number(qty) : NaN;
+    const parsedPrice = ['number', 'string'].includes(typeof price) ? Number(price) : NaN;
+    if (!/^[A-Z0-9.^=_-]{1,24}(?::[A-Z0-9_-]{1,16})?$/.test(cleanSymbol) ||
+        !Number.isFinite(parsedQty) || parsedQty <= 0 || !Number.isFinite(parsedPrice) || parsedPrice <= 0) {
         return res.status(400).json({ error: "Invalid portfolio parameters. Quantity and price must be positive numbers." });
     }
-    const newHolding = new Portfolio({ userId: req.user.uid, symbol: symbol.trim().toUpperCase(), qty: parsedQty, price: parsedPrice });
+    const currencyCode = currency === 'GBp' ? 'GBX' : typeof currency === 'string' ? currency.trim().toUpperCase() : '';
+    if (currency !== undefined && !/^[A-Z]{3}$/.test(currencyCode)) {
+        return res.status(400).json({ error: 'Provide a valid purchase price currency.' });
+    }
+    const newHolding = new Portfolio({
+        userId: req.user.uid,
+        symbol: cleanSymbol,
+        qty: parsedQty,
+        price: parsedPrice,
+        currency: currencyCode || undefined
+    });
     await newHolding.save();
     res.json(newHolding);
 });
@@ -1237,8 +1249,8 @@ app.post('/api/ai-analysis', aiAnalysisLimiter, async (req, res) => {
                 : 'RSI is unavailable. Load more price history to calculate momentum.';
         }
         res.json({ analysis: analysisText, source });
-    } catch (error) { 
-        res.status(500).json({ error: "AI Error", analysis: "Technical indicators show neutral price consolidation. Monitor moving average alignment." }); 
+    } catch (error) {
+        res.status(500).json({ error: 'Could not generate an indicator summary.' });
     }
 });
 

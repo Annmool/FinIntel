@@ -72,6 +72,12 @@ describe('Currency Utilities', () => {
     expect(inAed).toBe(367.25);
   });
 
+  test('converts UK pence to and from pounds without confusing the units', () => {
+    expect(getCurrencyCode({ currency: 'GBp' })).toBe('GBX');
+    expect(convertPrice(250, 'GBp', 'GBP')).toBeCloseTo(2.5);
+    expect(convertPrice(2.5, 'GBP', 'GBX')).toBeCloseTo(250);
+  });
+
   test('formats large caps with appropriate currency symbol and unit', () => {
     expect(formatLargeCap(1.5e12, 'KRW')).toBe('₩1.50T');
     expect(formatLargeCap(3.2e12, 'USD')).toBe('$3.20T');

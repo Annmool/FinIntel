@@ -462,19 +462,6 @@ button {
   flex-wrap: wrap;
 }
 
-.market-live-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-primary);
-  padding: 5px 10px;
-  border-radius: var(--radius-xs);
-  font-size: 0.72rem;
-  font-family: var(--font-mono);
-  color: var(--text-secondary);
-}
-
 .paper-capital-badge {
   display: inline-flex;
   align-items: center;
@@ -2929,7 +2916,6 @@ button {
     flex-wrap: nowrap;
   }
 
-  .market-live-badge,
   .paper-capital-badge {
     flex: 1;
     justify-content: center;
@@ -3316,7 +3302,6 @@ button {
     gap: 6px;
   }
 
-  .market-live-badge,
   .paper-capital-badge {
     justify-content: center;
     font-size: 0.68rem;
