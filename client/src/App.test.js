@@ -213,3 +213,14 @@ test('asks before removing a holding and reports a failed removal', async () => 
   expect(axios.delete).toHaveBeenLastCalledWith(expect.stringContaining('/api/portfolio/holding'));
   confirm.mockRestore();
 });
+
+test('keeps the chosen theme after a reload', async () => {
+  const { unmount } = render(<App />);
+  expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  fireEvent.click(screen.getAllByRole('button', { name: 'Toggle Theme' })[0]);
+  expect(document.documentElement).toHaveAttribute('data-theme', 'light');
+  unmount();
+  render(<App />);
+  expect(document.documentElement).toHaveAttribute('data-theme', 'light');
+  await screen.findByText('$0.00 Sim Cash');
+});

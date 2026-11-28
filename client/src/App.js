@@ -76,7 +76,13 @@ function App() {
   const [alerts, setAlerts] = useState([]);
   const [accountStatus, setAccountStatus] = useState('idle'); // 'idle' | 'loading' | 'ready' | 'error'
   const [apiStatus, setApiStatus] = useState('checking'); // 'checking' | 'online' | 'offline'
-  const [theme, setTheme] = useState('dark');
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem('finintel_theme') === 'light' ? 'light' : 'dark';
+    } catch {
+      return 'dark';
+    }
+  });
   const [briefing, setBriefing] = useState([]);
   const [briefingLoading, setBriefingLoading] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -348,6 +354,9 @@ function App() {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
+    try {
+      localStorage.setItem('finintel_theme', theme);
+    } catch {}
   }, [theme]);
 
   useEffect(() => {
