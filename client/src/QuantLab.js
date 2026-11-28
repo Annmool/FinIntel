@@ -106,10 +106,9 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
   }, []);
 
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
+  const [completedRun, setCompletedRun] = useState(null);
+  const result = completedRun?.result;
   const [error, setError] = useState('');
-  // True when the inputs on screen no longer match the displayed result.
-  const [stale, setStale] = useState(false);
   const [activeTab, setActiveTab] = useState('trajectories'); // 'trajectories' | 'frontier' | 'distribution'
 
   // Canvas refs and hover tooltip state
@@ -125,6 +124,13 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
       return (typeof val === 'number' && Number.isFinite(val)) ? val : (1 / symbols.length);
     });
   }, [symbols, weights]);
+
+  const inputKey = JSON.stringify([engineMode, selectedPreset, symbols, displayedWeights, numSimulations,
+    timeHorizonDays, initialCapital, riskFreeRate]);
+  const stale = completedRun && completedRun.inputKey !== inputKey;
+  const resultSymbols = result?.assumptions?.symbols ?? [];
+  const hasMatchingFrontier = result?.cpp?.efficientFrontier?.maxSharpe?.weights?.length === symbols.length &&
+    resultSymbols.length === symbols.length && resultSymbols.every((symbol, i) => symbol === symbols[i]);
 
   // Total percentage strictly for visible assets on screen
   const weightTotal = useMemo(() => {
@@ -167,17 +173,14 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
       .catch(() => {});
   }, []);
 
-  const runSimulation = useCallback(async (forcedMode = null, targetSymbols = null, targetWeights = null, targetPreset = null, capital = initialCapital) => {
-    const mode = forcedMode || engineMode;
-    const activeSymbols = targetSymbols || symbols;
-    const activeWeights = targetWeights || displayedWeights;
-    const preset = presets[targetPreset ?? selectedPreset];
-    const sum = activeWeights.reduce((total, weight) => total + weight, 0);
-    if (!activeSymbols.length || activeSymbols.length > 50 || Math.abs(sum - 1) > 0.02) {
+  const runSimulation = useCallback(async () => {
+    const preset = presets[selectedPreset];
+    const sum = displayedWeights.reduce((total, weight) => total + weight, 0);
+    if (!symbols.length || symbols.length > 50 || Math.abs(sum - 1) > 0.02) {
       setError('Choose 1 to 50 assets and normalize the allocations to 100%.');
       return;
     }
-    if (!Number.isFinite(capital) || capital <= 0 || capital > 1e12) {
+    if (!Number.isFinite(initialCapital) || initialCapital <= 0 || initialCapital > 1e12) {
       setError('Initial portfolio value must be positive and at most 1 trillion USD.');
       return;
     }
@@ -185,7 +188,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
       setError('Risk-free rate must be between 0 and 1.');
       return;
     }
-    const assetCount = activeSymbols.length;
+    const assetCount = symbols.length;
     if (numSimulations * timeHorizonDays * assetCount * (assetCount + 1) / 2 > 1_100_000_000) {
       setError('Reduce the path count, horizon, or number of assets to run this simulation.');
       return;
@@ -198,26 +201,25 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     setError('');
 
     const payload = {
-      symbols: activeSymbols,
-      weights: normalizeArrayTo1(activeWeights),
+      symbols,
+      weights: normalizeArrayTo1(displayedWeights),
       numSimulations,
       timeHorizonDays,
-      initialPortfolioValue: capital,
+      initialPortfolioValue: initialCapital,
       riskFreeRate,
       assumptionMode: preset ? 'preset' : 'historical'
     };
 
     try {
-      if (mode === 'cloud') {
+      if (engineMode === 'cloud') {
         const { data } = await axios.post(`${API_URL}/api/quant/simulate`, payload, { timeout: 60000, signal: controller.signal });
         if (!controller.signal.aborted) {
-          setResult(data);
-          setStale(false);
+          setCompletedRun({ inputKey, result: data });
         }
       } else {
-        const expectedReturns = preset?.expectedReturns ?? activeSymbols.map(() => 0.16);
-        const volatilities = preset?.volatilities ?? activeSymbols.map(() => 0.22);
-        const correlationMatrix = activeSymbols.map((_, i) => activeSymbols.map((_, j) => i === j ? 1 : 0.45));
+        const expectedReturns = preset?.expectedReturns ?? symbols.map(() => 0.16);
+        const volatilities = preset?.volatilities ?? symbols.map(() => 0.22);
+        const correlationMatrix = symbols.map((_, i) => symbols.map((_, j) => i === j ? 1 : 0.45));
         const source = preset ? 'preset' : 'hypothetical';
         const worker = createQuantWorker();
         controller.signal.addEventListener('abort', () => worker.terminate(), { once: true });
@@ -225,11 +227,13 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
           worker.terminate();
           if (controller.signal.aborted) return;
           if (data.error) setError(data.error);
-          else setStale(false);
-          if (!data.error) setResult({
-            ...data.result,
-            assumptions: { ...payload, currency: 'USD', expectedReturns, volatilities, correlationMatrix,
-              sources: { expectedReturns: source, volatilities: source, correlationMatrix: source } }
+          else setCompletedRun({
+            inputKey,
+            result: {
+              ...data.result,
+              assumptions: { ...payload, currency: 'USD', expectedReturns, volatilities, correlationMatrix,
+                sources: { expectedReturns: source, volatilities: source, correlationMatrix: source } }
+            }
           });
           setLoading(false);
         };
@@ -246,7 +250,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
       if (!controller.signal.aborted) setError(error.response?.data?.error || error.message || 'Simulation failed.');
     }
     if (!controller.signal.aborted) setLoading(false);
-  }, [symbols, displayedWeights, numSimulations, timeHorizonDays, initialCapital, riskFreeRate, engineMode, presets, selectedPreset]);
+  }, [symbols, displayedWeights, numSimulations, timeHorizonDays, initialCapital, riskFreeRate, engineMode, presets, selectedPreset, inputKey]);
 
   useEffect(() => {
     const onKeyDown = event => { if (event.key === 'Escape') onClose(); };
@@ -272,7 +276,6 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
       setError('');
       // Each cloud run counts against the server's simulation limit, so a preset
       // only changes the inputs. The Run button starts the simulation.
-      setStale(true);
     }
   };
 
@@ -311,7 +314,6 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     setWeights(normalizedW);
     setInitialCapital(totalQtyVal);
     setError('');
-    setStale(true);
   };
 
   const handleWeightChange = (index, newVal) => {
@@ -344,12 +346,8 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
   };
 
   const applyOptimalWeights = () => {
-    if (!result?.cpp?.efficientFrontier?.maxSharpe?.weights) return;
+    if (!hasMatchingFrontier) return;
     const optimal = result.cpp.efficientFrontier.maxSharpe.weights;
-    if (optimal.length !== symbols.length || result.assumptions?.symbols.some((symbol, i) => symbol !== symbols[i])) {
-      setError('Run the simulation to calculate optimal weights for the current assets.');
-      return;
-    }
     const normalized = normalizeArrayTo1(optimal.slice(0, symbols.length));
     setWeights(normalized);
     setError('');
@@ -840,7 +838,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
             <div className="engine-mode-toggle">
               <button
                 className={`mode-btn ${engineMode === 'cloud' ? 'active' : ''}`}
-                onClick={() => { if (engineMode !== 'cloud') { setEngineMode('cloud'); setStale(true); } }}
+                onClick={() => setEngineMode('cloud')}
                 title="Execute high-throughput C++20 OpenMP Engine on Cloud"
               >
                 <Cloud size={13} />
@@ -848,7 +846,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
               </button>
               <button
                 className={`mode-btn ${engineMode === 'local' ? 'active' : ''}`}
-                onClick={() => { if (engineMode !== 'local') { setEngineMode('local'); setStale(true); } }}
+                onClick={() => setEngineMode('local')}
                 title="Execute simulation directly on your device hardware"
               >
                 <Laptop size={13} />
@@ -1170,7 +1168,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                       {result.cpp.benchmark.simulations.toLocaleString()}
                     </span>
                     <span className="metric-box-sub font-mono">
-                      {((result.cpp.benchmark.totalSimulatedSteps || (result.cpp.benchmark.simulations * timeHorizonDays * symbols.length)) / 1e6).toFixed(1)}M steps
+                      {((result.cpp.benchmark.totalSimulatedSteps ?? (result.cpp.benchmark.simulations * result.cpp.benchmark.timeHorizonDays * resultSymbols.length)) / 1e6).toFixed(1)}M steps
                     </span>
                   </div>
 
@@ -1190,7 +1188,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                       {result.cpp.benchmark.timeHorizonDays} Days
                     </span>
                     <span className="metric-box-sub font-mono">
-                      {symbols.length} correlated assets
+                      {resultSymbols.length} correlated assets
                     </span>
                   </div>
                 </div>
@@ -1406,7 +1404,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                       Markowitz Tangency Portfolio (Maximum Sharpe Allocation)
                     </span>
                   </div>
-                  {result.cpp.efficientFrontier.maxSharpe?.weights?.length === symbols.length ? (
+                  {hasMatchingFrontier ? (
                     <button
                       className="btn-apply-optimal"
                       onClick={applyOptimalWeights}
@@ -1427,7 +1425,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                   )}
                 </div>
 
-                {result.cpp.efficientFrontier.maxSharpe?.weights?.length === symbols.length ? (
+                {hasMatchingFrontier ? (
                   <div className="rebalance-chips-grid">
                     {symbols.map((sym, i) => {
                       const currentW = (displayedWeights[i] || 0) * 100;

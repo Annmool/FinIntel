@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import QuantLab from './QuantLab';
 import axios from './apiClient';
 
@@ -48,6 +48,7 @@ test('changing presets or engine does not start cloud runs, and a failed run kee
   }
   fireEvent.click(screen.getByRole('button', { name: /Local Device/ }));
   fireEvent.click(screen.getByRole('button', { name: /Cloud C\+\+ Core/ }));
+  fireEvent.change(screen.getByLabelText(/Risk-Free Rate/), { target: { value: '0' } });
   expect(axios.post).toHaveBeenCalledTimes(1);
   expect(screen.getByRole('status')).toHaveTextContent(/Inputs changed/);
   expect(screen.getByText('$9,000')).toBeInTheDocument();
@@ -61,6 +62,19 @@ test('changing presets or engine does not start cloud runs, and a failed run kee
   fireEvent.click(screen.getByRole('button', { name: /Execute Cloud/ }));
   expect(await screen.findByText('$7,500')).toBeInTheDocument();
   await waitFor(() => expect(screen.queryByText(/Inputs changed/)).not.toBeInTheDocument());
+});
+
+test('a simulation that finishes after the inputs change stays marked as out of date', async () => {
+  let finish;
+  axios.post.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  render(<QuantLab onClose={() => {}} />);
+  fireEvent.click(screen.getByRole('button', { name: /All-Weather/ }));
+  await act(async () => finish({ data: simulation(9000) }));
+
+  expect(screen.getByText('$9,000')).toBeInTheDocument();
+  expect(screen.getByText(/Inputs changed/)).toBeInTheDocument();
+  expect(screen.getByText('1 correlated assets')).toBeInTheDocument();
+  expect(axios.post).toHaveBeenCalledTimes(1);
 });
 
 test('labels its controls, shows the real starting value, and closes on Escape', async () => {
