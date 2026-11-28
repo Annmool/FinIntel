@@ -18,6 +18,7 @@ const { isFreshAlertQuote, recordAlertReceipt } = require('./services/alertRecei
 const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
+const { notFound, errorHandler } = require('./services/httpErrors');
 const { rankUniverse } = require('./services/screener');
 const { finnhubSymbol, finnhubFundamentals } = require('./services/fundamentals');
 const { newsQuery, selectStockNews } = require('./services/stockNews');
@@ -617,11 +618,11 @@ app.get('/api/watchlist/:userId', async (req, res) => {
 });
 
 app.post('/api/watchlist', async (req, res) => {
-    const { symbol } = req.body;
-    if (!symbol || typeof symbol !== 'string') {
-        return res.status(400).json({ error: "Invalid symbol or userId" });
+    const { symbol } = req.body ?? {};
+    const cleanSym = typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+    if (!stockSymbolPattern.test(cleanSym)) {
+        return res.status(400).json({ error: 'Provide a valid ticker symbol.' });
     }
-    const cleanSym = symbol.trim().toUpperCase();
     const exists = await Watchlist.findOne({ symbol: cleanSym, userId: req.user.uid });
     if (exists) return res.status(400).send("Exists");
     const newItem = new Watchlist({ symbol: cleanSym, userId: req.user.uid });
@@ -676,6 +677,7 @@ app.patch('/api/portfolio/:id/cost', async (req, res) => {
 });
 
 app.delete('/api/portfolio/:id', async (req, res) => {
+    if (!mongoose.isObjectIdOrHexString(req.params.id)) return res.status(404).json({ error: 'Holding not found.' });
     const deleted = await Portfolio.findOneAndDelete({ _id: req.params.id, userId: req.user.uid });
     if (!deleted) return res.status(404).json({ error: 'Holding not found.' });
     res.send("Deleted");
@@ -1218,7 +1220,7 @@ app.post('/api/alerts', async (req, res) => {
 });
 
 app.delete('/api/alerts/:id', async (req, res) => {
-    if (req.params.id) await Alert.findOneAndDelete({ _id: req.params.id, userId: req.user.uid });
+    if (mongoose.isObjectIdOrHexString(req.params.id)) await Alert.findOneAndDelete({ _id: req.params.id, userId: req.user.uid });
     res.send("Deleted");
 });
 
@@ -1406,6 +1408,9 @@ app.post('/api/quant/simulate', quantSimulationLimiter, quantConcurrencyLimit, a
         res.locals.releaseQuantSlot();
     }
 });
+
+app.use(notFound);
+app.use(errorHandler());
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));
