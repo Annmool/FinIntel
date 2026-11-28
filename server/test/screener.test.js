@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { rankUniverse } = require('../services/screener');
+const { hasScreenerCoverage, rankUniverse } = require('../services/screener');
 
 const quote = (symbol, change, extra = {}) => ({ symbol, regularMarketChangePercent: change, currency: 'USD', ...extra });
 
@@ -11,6 +11,19 @@ test('losers and gainers never include stocks that moved the other way', () => {
 
   const mixed = [quote('A', -1), quote('B', 2), quote('C', -3)];
   assert.deepEqual(rankUniverse('day_losers', mixed).map(q => q.symbol), ['C', 'A']);
+});
+
+test('an empty ranking is conclusive only when quotes contain data for that category', () => {
+  const usPriceOnly = quote('AAPL', null);
+  const risingUs = quote('AAPL', 2);
+  assert.equal(hasScreenerCoverage('day_losers', [usPriceOnly]), false);
+  assert.equal(hasScreenerCoverage('day_losers', [risingUs]), true);
+  assert.deepEqual(rankUniverse('day_losers', [risingUs]), []);
+  assert.equal(hasScreenerCoverage('indian_market', [risingUs]), false);
+  assert.equal(hasScreenerCoverage('indian_market', [quote('TCS.NS', null)]), true);
+  assert.equal(hasScreenerCoverage('most_actives', [risingUs]), false);
+  assert.equal(hasScreenerCoverage('undervalued_large_caps', [risingUs]), false);
+  assert.equal(hasScreenerCoverage('undervalued_large_caps', [quote('AAPL', 2, { marketCap: 50e9, trailingPE: 20 })]), true);
 });
 
 test('ranks the other screeners and keeps Indian rows without a change figure last', () => {

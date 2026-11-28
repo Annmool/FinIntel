@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import Screener from './Screener';
 import axios from './apiClient';
 
@@ -28,10 +28,12 @@ test('labels last available rows and shows no notice for current data', async ()
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
 });
 
-test('explains an empty losers list instead of asking for a retry', async () => {
-  axios.get.mockImplementation(async url => ({ data: url.endsWith('day_gainers') ? [] : [row()] }));
+test('explains empty gainers and losers lists using available session data', async () => {
+  axios.get.mockResolvedValue({ data: [] });
   render(<Screener onClose={() => {}} onSelectSymbol={() => {}} />);
-  expect(await screen.findByText('None of the tracked stocks rose in the latest session.')).toBeInTheDocument();
+  expect(await screen.findByText(/No gains were reported/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Top Losers' }));
+  expect(await screen.findByText(/No declines were reported/)).toBeInTheDocument();
 });
 
 test('says when rankings cover only the tracked list', async () => {

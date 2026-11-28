@@ -276,8 +276,8 @@ function Screener({ onClose, onSelectSymbol }) {
                                     <tr>
                                         <td colSpan={9} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-tertiary)' }}>
                                             {searchTerm ? 'No securities matched your search term.'
-                                                : filterType === 'day_losers' ? 'None of the tracked stocks fell in the latest session.'
-                                                : filterType === 'day_gainers' ? 'None of the tracked stocks rose in the latest session.'
+                                                : filterType === 'day_losers' ? 'No declines were reported for tracked stocks with available session data.'
+                                                : filterType === 'day_gainers' ? 'No gains were reported for tracked stocks with available session data.'
                                                 : 'No securities returned for this category. Use refresh to reload.'}
                                         </td>
                                     </tr>

@@ -19,7 +19,7 @@ const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
 const { notFound, errorHandler } = require('./services/httpErrors');
-const { rankUniverse } = require('./services/screener');
+const { hasScreenerCoverage, rankUniverse } = require('./services/screener');
 const { loadChartUniverse, mapLimited, valuationFromMetric, withValuations } = require('./services/universeQuotes');
 const { finnhubSymbol, finnhubFundamentals } = require('./services/fundamentals');
 const { newsQuery, selectStockNews } = require('./services/stockNews');
@@ -1162,6 +1162,10 @@ app.get('/api/screener/:type', async (req, res) => {
                         console.log(`Predefined screener unavailable for ${type} (${yfErr.message}). Using universe engine.`);
                     }
                 }
+                if (type === 'day_gainers' || type === 'day_losers') {
+                    const direction = type === 'day_gainers' ? 1 : -1;
+                    quotes = quotes.filter(quote => quote.regularMarketChangePercent * direction > 0);
+                }
             }
 
             // 2. Universe Engine: If predefined screener returned empty or custom filter requested
@@ -1187,11 +1191,12 @@ app.get('/api/screener/:type', async (req, res) => {
                 }
 
                 // 3. Chart fallback: real prices for the whole tracked list, including NSE listings.
-                if (validQuotes.length === 0) {
+                if (!hasScreenerCoverage(type, validQuotes, TECH_SYMBOLS)) {
                     try {
+                        const needsValuations = type === 'tech_titans' || type === 'undervalued_large_caps';
                         const [rows, valuations] = await Promise.all([
                             loadChartQuotes(SCREENER_UNIVERSE),
-                            loadUniverseValuations().catch(() => ({}))
+                            needsValuations ? loadUniverseValuations().catch(() => ({})) : {}
                         ]);
                         validQuotes = withValuations(rows, valuations);
                     } catch (chartErr) {
@@ -1200,7 +1205,8 @@ app.get('/api/screener/:type', async (req, res) => {
                 }
 
                 // 4. Finnhub Resilience Fallback: If Yahoo failed (e.g. 429 crumb limit), query Finnhub quotes
-                if (validQuotes.length === 0 && process.env.FINNHUB_API_KEY) {
+                if (!hasScreenerCoverage(type, validQuotes, TECH_SYMBOLS) && process.env.FINNHUB_API_KEY &&
+                    ['day_gainers', 'day_losers', 'tech_titans'].includes(type)) {
                     try {
                         const usSymbols = SCREENER_UNIVERSE.filter(s => !s.endsWith('.NS') && !s.endsWith('.BO'));
                         const fhResults = await Promise.allSettled(
@@ -1237,7 +1243,7 @@ app.get('/api/screener/:type', async (req, res) => {
                 }
 
                 // An up day can leave the losers list empty. That is an answer, not an outage.
-                answered = validQuotes.length > 0;
+                answered = hasScreenerCoverage(type, validQuotes, TECH_SYMBOLS);
                 quotes = rankUniverse(type, validQuotes, TECH_SYMBOLS).map(quote => ({ ...quote, scope: 'tracked' }));
             }
 
