@@ -72,6 +72,14 @@ describe('Currency Utilities', () => {
     expect(inAed).toBe(367.25);
   });
 
+  test('reports an unknown conversion instead of treating a missing rate as 1:1', () => {
+    expect(convertPrice(100, 'EGP', 'USD', { USD: 1, INR: 92.9 })).toBeNaN();
+    expect(convertPrice(100, 'USD', 'EGP', { USD: 1 })).toBeNaN();
+    expect(convertPrice(100, 'EGP', 'EGP', {})).toBe(100);
+    expect(convertPrice(100, 'EGP', 'USD', { EGP: 50 })).toBe(2);
+    expect(formatPrice(convertPrice(100, 'EGP', 'USD', {}), 'USD')).toBe('--');
+  });
+
   test('converts UK pence to and from pounds without confusing the units', () => {
     expect(getCurrencyCode({ currency: 'GBp' })).toBe('GBX');
     expect(convertPrice(250, 'GBp', 'GBP')).toBeCloseTo(2.5);

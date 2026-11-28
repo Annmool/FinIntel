@@ -1287,7 +1287,7 @@ function App() {
                           {stockCurrency}
                         </span>
                       </span>
-                      {stockCurrency !== baseCurrency && (
+                      {stockCurrency !== baseCurrency && Number.isFinite(convertPrice(1, stockCurrency, baseCurrency, fxRates)) && (
                         <span className="term-badge neutral font-mono" style={{ fontSize: '0.8rem', padding: '2px 8px' }}>
                           ≈ {baseCurSymbol}{formatPrice(convertPrice(data?.values?.[0]?.close || 0, stockCurrency, baseCurrency, fxRates), baseCurrency)} {baseCurrency}
                         </span>
@@ -1915,7 +1915,9 @@ function App() {
                     {getCurrencySymbol(orderModal.currency)}{formatPrice(orderModal.price, orderModal.currency)}
                     {orderModal.currency !== 'USD' && (
                       <span className="order-price-converted">
-                        ≈ ${convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates).toFixed(2)} USD
+                        {Number.isFinite(convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates))
+                          ? `≈ $${convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates).toFixed(2)} USD`
+                          : 'USD estimate unavailable'}
                       </span>
                     )}
                   </div>
@@ -2040,7 +2042,7 @@ function App() {
                       <button
                         type="button"
                         className="order-preset-pill max-btn"
-                        disabled={balanceUnavailable}
+                        disabled={balanceUnavailable || !Number.isFinite(convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates))}
                         onClick={() => {
                           const priceUsd = convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates);
                           const maxShares = priceUsd > 0 ? Math.floor(virtualBalance / priceUsd) : 0;
@@ -2083,13 +2085,16 @@ function App() {
                     {orderModal.currency !== 'USD' && (
                       <div className="order-calc-row">
                         <span className="order-calc-label">Normalized Total (USD)</span>
-                        <span className="order-calc-val font-mono">≈ ${totalUsd.toFixed(2)} USD</span>
+                        <span className="order-calc-val font-mono">
+                          {Number.isFinite(totalUsd) ? `≈ $${totalUsd.toFixed(2)} USD` : `Unavailable · no ${orderModal.currency} exchange rate`}
+                        </span>
                       </div>
                     )}
                     <div className="order-calc-row">
                       <span className="order-calc-label">Estimated Cash Balance</span>
                       <span className={`order-calc-val font-mono ${isInsufficient ? 'neg' : ''}`}>
-                        {balanceUnavailable ? balanceStatus : `$${formatPrice(Math.max(0, remainingCash), 'USD')} USD`}
+                        {balanceUnavailable ? balanceStatus
+                          : Number.isFinite(remainingCash) ? `$${formatPrice(Math.max(0, remainingCash), 'USD')} USD` : 'Unavailable'}
                       </span>
                     </div>
                     <p className="order-calc-label">The fill uses a recent server-verified quote.</p>
