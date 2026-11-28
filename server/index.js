@@ -18,6 +18,7 @@ const { isFreshAlertQuote, recordAlertReceipt } = require('./services/alertRecei
 const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
+const { newsQuery, selectStockNews } = require('./services/stockNews');
 const { DEFAULT_MODEL: DEFAULT_ANALYST_MODEL, createAnalyst } = require('./services/analyst');
 const YahooFinance = require('yahoo-finance2').default;
 const yahooFinance = new YahooFinance({
@@ -537,17 +538,10 @@ app.get('/api/market-briefing', async (req, res) => {
 app.get('/api/news/:symbol', async (req, res) => {
     try {
         const rawSymbol = req.params.symbol.trim().toUpperCase();
-        const cleanSymbol = rawSymbol.split(':')[0].replace('.NS', '').replace('.BO', '');
+        if (!stockSymbolPattern.test(rawSymbol)) return res.json([]);
         const articles = await getOrLoad(`news_${rawSymbol}`, 300, async () => {
-            const ySearch = await yahooFinance.search(cleanSymbol, {}, { validateResult: false });
-            return (ySearch.news || []).slice(0, 5).map(item => ({
-                title: item.title,
-                url: item.link,
-                urlToImage: item.thumbnail?.resolutions?.[0]?.url || null,
-                source: { name: item.publisher },
-                publishedAt: item.providerPublishTime,
-                sentimentScore: sentiment.analyze(item.title || "").score
-            }));
+            const ySearch = await yahooFinance.search(newsQuery(rawSymbol), { newsCount: 20 }, { validateResult: false });
+            return selectStockNews(rawSymbol, ySearch.news, title => sentiment.analyze(title || "").score);
         }, { shouldCache: value => Array.isArray(value) && value.length > 0 });
         res.json(articles);
     } catch (e) { res.json([]); }
