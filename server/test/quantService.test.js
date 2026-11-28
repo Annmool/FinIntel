@@ -33,3 +33,25 @@ test('rejects impossible correlations and allows singular valid matrices', () =>
   assert.equal(isPositiveSemidefinite([[1, 1], [1, 1]]), true);
   assert.equal(isPositiveSemidefinite([[1, 1, 0], [1, 1, 0.1], [0, 0.1, 1]]), false);
 });
+
+test('caps engine threads to the configured or available CPUs', () => {
+  const { quantThreadCount } = require('../quant_service');
+  assert.equal(quantThreadCount(undefined, 1), 1);
+  assert.equal(quantThreadCount(undefined, 32), 8);
+  assert.equal(quantThreadCount('2', 32), 2);
+  assert.equal(quantThreadCount('0', 4), 4);
+  assert.equal(quantThreadCount('many', undefined), 1);
+});
+
+test('stops the native engine when the request is abandoned', { skip: !require('fs').existsSync(require('path').join(__dirname, '..', 'quant_core', process.platform === 'win32' ? 'quant_engine.exe' : 'quant_engine')) }, async () => {
+  const { runCppQuantEngine } = require('../quant_service');
+  const controller = new AbortController();
+  const run = runCppQuantEngine({
+    symbols: ['A', 'B', 'C', 'D', 'E'], weights: [0.2, 0.2, 0.2, 0.2, 0.2], numSimulations: 200000, timeHorizonDays: 365,
+    initialPortfolioValue: 100000, riskFreeRate: 0, expectedReturns: [0.1, 0.1, 0.1, 0.1, 0.1],
+    volatilities: [0.2, 0.2, 0.2, 0.2, 0.2],
+    correlationMatrix: [0, 1, 2, 3, 4].map(i => [0, 1, 2, 3, 4].map(j => i === j ? 1 : 0.3))
+  }, { signal: controller.signal });
+  setTimeout(() => controller.abort(), 50);
+  await assert.rejects(run, /cancelled/);
+});

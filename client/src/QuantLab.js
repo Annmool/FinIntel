@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 
 import { API_URL } from './apiConfig';
+import createQuantWorker from './createQuantWorker';
 
 const ASSET_COLORS = [
   '#4ADE80', // Emerald green
@@ -107,6 +108,8 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+  // True when the inputs on screen no longer match the displayed result.
+  const [stale, setStale] = useState(false);
   const [activeTab, setActiveTab] = useState('trajectories'); // 'trajectories' | 'frontier' | 'distribution'
 
   // Canvas refs and hover tooltip state
@@ -193,7 +196,6 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     activeSimulation.current = controller;
     setLoading(true);
     setError('');
-    setResult(null);
 
     const payload = {
       symbols: activeSymbols,
@@ -208,19 +210,23 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     try {
       if (mode === 'cloud') {
         const { data } = await axios.post(`${API_URL}/api/quant/simulate`, payload, { timeout: 60000, signal: controller.signal });
-        if (!controller.signal.aborted) setResult(data);
+        if (!controller.signal.aborted) {
+          setResult(data);
+          setStale(false);
+        }
       } else {
         const expectedReturns = preset?.expectedReturns ?? activeSymbols.map(() => 0.16);
         const volatilities = preset?.volatilities ?? activeSymbols.map(() => 0.22);
         const correlationMatrix = activeSymbols.map((_, i) => activeSymbols.map((_, j) => i === j ? 1 : 0.45));
         const source = preset ? 'preset' : 'hypothetical';
-        const worker = new Worker(new URL('./quant.worker.js', import.meta.url));
+        const worker = createQuantWorker();
         controller.signal.addEventListener('abort', () => worker.terminate(), { once: true });
         worker.onmessage = ({ data }) => {
           worker.terminate();
           if (controller.signal.aborted) return;
           if (data.error) setError(data.error);
-          else setResult({
+          else setStale(false);
+          if (!data.error) setResult({
             ...data.result,
             assumptions: { ...payload, currency: 'USD', expectedReturns, volatilities, correlationMatrix,
               sources: { expectedReturns: source, volatilities: source, correlationMatrix: source } }
@@ -258,8 +264,9 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
       setSymbols(newSyms);
       setWeights(newWeights);
       setError('');
-      // Immediately run simulation for newly chosen preset so charts and frontier reflect this preset instantly
-      runSimulation(null, newSyms, newWeights, key);
+      // Each cloud run counts against the server's simulation limit, so a preset
+      // only changes the inputs. The Run button starts the simulation.
+      setStale(true);
     }
   };
 
@@ -297,7 +304,8 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     setSymbols(cleanSyms);
     setWeights(normalizedW);
     setInitialCapital(totalQtyVal);
-    runSimulation(null, cleanSyms, normalizedW, 'custom', totalQtyVal);
+    setError('');
+    setStale(true);
   };
 
   const handleWeightChange = (index, newVal) => {
@@ -333,8 +341,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     if (!result?.cpp?.efficientFrontier?.maxSharpe?.weights) return;
     const optimal = result.cpp.efficientFrontier.maxSharpe.weights;
     if (optimal.length !== symbols.length || result.assumptions?.symbols.some((symbol, i) => symbol !== symbols[i])) {
-      setError('Recalculating optimal frontier weights for current portfolio...');
-      runSimulation();
+      setError('Run the simulation to calculate optimal weights for the current assets.');
       return;
     }
     const normalized = normalizeArrayTo1(optimal.slice(0, symbols.length));
@@ -827,7 +834,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
             <div className="engine-mode-toggle">
               <button
                 className={`mode-btn ${engineMode === 'cloud' ? 'active' : ''}`}
-                onClick={() => { setEngineMode('cloud'); runSimulation('cloud'); }}
+                onClick={() => { if (engineMode !== 'cloud') { setEngineMode('cloud'); setStale(true); } }}
                 title="Execute high-throughput C++20 OpenMP Engine on Cloud"
               >
                 <Cloud size={13} />
@@ -835,7 +842,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
               </button>
               <button
                 className={`mode-btn ${engineMode === 'local' ? 'active' : ''}`}
-                onClick={() => { setEngineMode('local'); runSimulation('local'); }}
+                onClick={() => { if (engineMode !== 'local') { setEngineMode('local'); setStale(true); } }}
                 title="Execute simulation directly on your device hardware"
               >
                 <Laptop size={13} />
@@ -1089,6 +1096,12 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
               <div className="quant-error-banner" role="alert">
                 <ShieldAlert size={16} />
                 <span>{error}</span>
+              </div>
+            )}
+
+            {stale && result && !loading && (
+              <div className="quant-fallback-banner" role="status">
+                Inputs changed. Run the simulation to update the results below.
               </div>
             )}
 

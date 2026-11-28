@@ -1398,7 +1398,10 @@ app.post('/api/quant/simulate', quantSimulationLimiter, quantConcurrencyLimit, a
             correlationMatrix: finalCorr
         };
 
-        const cppResult = await runCppQuantEngine(inputPayload);
+        // Stop the engine when the browser gives up, so its slot is free again.
+        const disconnected = new AbortController();
+        res.on('close', () => { if (!res.writableEnded) disconnected.abort(); });
+        const cppResult = await runCppQuantEngine(inputPayload, { signal: disconnected.signal });
 
         res.json({
             success: true,
@@ -1421,6 +1424,7 @@ app.post('/api/quant/simulate', quantSimulationLimiter, quantConcurrencyLimit, a
             }
         });
     } catch (error) {
+        if (res.destroyed) return;
         console.error("Quant Simulation Error:", error);
         res.status(500).json({ error: "The simulation engine could not complete this request." });
     } finally {
