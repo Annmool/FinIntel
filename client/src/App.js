@@ -56,8 +56,12 @@ import { onAuthStateChanged } from 'firebase/auth';
 
 import { API_URL } from './apiConfig';
 
+function paperOrderSignature(uid, side, symbol, qty) {
+  return JSON.stringify([uid, side, symbol, qty]);
+}
+
 function App() {
-  const pendingPaperOrder = useRef(null);
+  const pendingPaperOrders = useRef(new Map());
   const submittingOrder = useRef(false);
   const balanceRequest = useRef(0);
   const stockRequest = useRef(0);
@@ -600,7 +604,6 @@ function App() {
 
   const closeOrderModal = useCallback(() => {
     if (submittingOrder.current) return;
-    pendingPaperOrder.current = null;
     setOrderModal(prev => ({ ...prev, isOpen: false }));
   }, []);
 
@@ -629,22 +632,23 @@ function App() {
     submittingOrder.current = true;
     setOrderModal(prev => ({ ...prev, isSubmitting: true, error: '' }));
 
+    let signature;
     try {
       if (orderModal.type === 'BUY' || orderModal.type === 'SELL') {
         const qty = Number(orderModal.qty);
         if (!Number.isFinite(qty) || qty <= 0) throw new Error('Please enter a valid share quantity.');
 
         const side = orderModal.type.toLowerCase();
-        const signature = JSON.stringify([currUser.uid, side, orderModal.symbol, qty]);
-        if (pendingPaperOrder.current?.signature !== signature) {
-          pendingPaperOrder.current = { signature, id: crypto.randomUUID() };
+        signature = paperOrderSignature(currUser.uid, side, orderModal.symbol, qty);
+        if (!pendingPaperOrders.current.has(signature)) {
+          pendingPaperOrders.current.set(signature, crypto.randomUUID());
         }
         const { data: fill } = await axios.post(`${API_URL}/api/paper-portfolio/${side}`, {
           symbol: orderModal.symbol,
           qty,
-          orderId: pendingPaperOrder.current.id
+          orderId: pendingPaperOrders.current.get(signature)
         });
-        pendingPaperOrder.current = null;
+        pendingPaperOrders.current.delete(signature);
         if (auth.currentUser?.uid === currUser.uid) {
           fetchVirtualBalance(currUser.uid);
           fetchPaperPortfolio(currUser.uid);
@@ -686,6 +690,7 @@ function App() {
         showToast(`Alert registered: ${orderModal.symbol} ${orderModal.alertCondition} ${getCurrencySymbol(orderModal.currency)}${formatPrice(parsedTarget, orderModal.currency)}`);
       }
     } catch (err) {
+      if (signature && [400, 409].includes(err.response?.status)) pendingPaperOrders.current.delete(signature);
       const errorMsg = err.response?.data?.error || err.message || 'Order execution failed.';
       setOrderModal(prev => ({ ...prev, isSubmitting: false, error: errorMsg }));
     } finally {
@@ -2180,7 +2185,12 @@ function App() {
                 );
               })()}
 
-              {/* Error message from backend */}
+              {user && (orderModal.type === 'BUY' || orderModal.type === 'SELL') && !orderModal.isSubmitting &&
+                pendingPaperOrders.current.has(paperOrderSignature(user.uid, orderModal.type.toLowerCase(), orderModal.symbol, Number(orderModal.qty))) && (
+                <p role="status" className="order-calc-label">
+                  A previous submission for this quantity is unconfirmed. Submit again to check its outcome without placing a duplicate order.
+                </p>
+              )}
               {orderModal.error && (
                 <div className="order-validation-msg neg">
                   {orderModal.error}
