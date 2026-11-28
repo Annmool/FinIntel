@@ -351,6 +351,9 @@ function App() {
     const results = await Promise.all([fetchWatchlist(uid), fetchPortfolio(uid), fetchPaperPortfolio(uid), fetchAlerts(uid)]);
     if (auth.currentUser?.uid === uid) setAccountStatus(results.every(Boolean) ? 'ready' : 'error');
   };
+  // The sign-in listener is registered once; it reaches the current loader through this ref.
+  const loadAccountRef = useRef(loadAccount);
+  loadAccountRef.current = loadAccount;
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -372,7 +375,7 @@ function App() {
       setVirtualBalance(null);
       setBalanceLoading(false);
       setAccountStatus('idle');
-      if (u) loadAccount(u.uid);
+      if (u) loadAccountRef.current(u.uid);
     });
 
     const fetchBriefing = () => {
