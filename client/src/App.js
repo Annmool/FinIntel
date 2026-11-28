@@ -50,6 +50,7 @@ import {
   convertPrice,
   formatLargeCap
 } from './utils/currency';
+import { portfolioCsvRows, toCsv } from './utils/exportCsv';
 import { auth, provider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 
@@ -784,14 +785,15 @@ function App() {
       ]);
 
       if (type === 'csv') {
-        const csvContent = 'data:text/csv;charset=utf-8,' + [headers, ...rows].map(e => e.join(',')).join('\n');
-        const encodedUri = encodeURI(csvContent);
+        const blob = new Blob([String.fromCharCode(0xFEFF) + toCsv(portfolioCsvRows(portfolioHoldingsWithPnL, baseCurrency))], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.setAttribute('href', encodedUri);
+        link.setAttribute('href', url);
         link.setAttribute('download', `FinIntel_Portfolio_${baseCurrency}_${new Date().toISOString().split('T')[0]}.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(url);
         showToast('Exported CSV report');
       } else if (type === 'pdf') {
         const doc = new jsPDF();
