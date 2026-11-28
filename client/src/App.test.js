@@ -224,3 +224,39 @@ test('keeps the chosen theme after a reload', async () => {
   expect(document.documentElement).toHaveAttribute('data-theme', 'light');
   await screen.findByText('$0.00 Sim Cash');
 });
+
+test('closing the paper ticket starts a new order instead of replaying the old order ID', async () => {
+  // jsdom has no crypto.randomUUID; browsers provide it on https and localhost.
+  let nextId = 0;
+  Object.defineProperty(window, 'crypto', { configurable: true, value: { randomUUID: () => 'order-id-0000000' + (nextId += 1) } });
+  const sent = [];
+  axios.post.mockImplementation(async (url, body) => {
+    sent.push(body.orderId);
+    throw new Error('response lost');
+  });
+  render(<App />);
+  fireEvent.click(await screen.findByRole('button', { name: 'AAPL' }));
+  const openTicket = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: 'Paper Buy' }));
+    return screen.getByRole('dialog', { name: 'Paper buy AAPL' });
+  };
+
+  let ticket = await openTicket();
+  fireEvent.click(within(ticket).getByRole('button', { name: 'Set quantity to 5' }));
+  expect(within(ticket).getByLabelText(/Order Quantity/)).toHaveValue(5);
+  const execute = within(ticket).getByRole('button', { name: 'Execute Paper Buy' });
+  fireEvent.click(execute);
+  expect(await within(ticket).findByText('response lost')).toBeInTheDocument();
+  fireEvent.click(execute);
+  await waitFor(() => expect(sent).toHaveLength(2));
+  expect(sent[1]).toBe(sent[0]);
+
+  fireEvent.keyDown(window, { key: 'Escape' });
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+  ticket = await openTicket();
+  fireEvent.click(within(ticket).getByRole('button', { name: 'Set quantity to 5' }));
+  fireEvent.click(within(ticket).getByRole('button', { name: 'Execute Paper Buy' }));
+  await waitFor(() => expect(sent).toHaveLength(3));
+  expect(sent[2]).not.toBe(sent[0]);
+});

@@ -595,6 +595,19 @@ function App() {
     }
   };
 
+  const closeOrderModal = useCallback(() => {
+    if (submittingOrder.current) return;
+    pendingPaperOrder.current = null;
+    setOrderModal(prev => ({ ...prev, isOpen: false }));
+  }, []);
+
+  useEffect(() => {
+    if (!orderModal.isOpen) return undefined;
+    const onKeyDown = event => { if (event.key === 'Escape') closeOrderModal(); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [orderModal.isOpen, closeOrderModal]);
+
   const executeModalOrder = async () => {
     if (submittingOrder.current) return;
     let currUser = user;
@@ -1931,12 +1944,10 @@ function App() {
         <div
           className="order-modal-backdrop"
           onClick={(e) => {
-            if (e.target === e.currentTarget && !orderModal.isSubmitting) {
-              setOrderModal(prev => ({ ...prev, isOpen: false }));
-            }
+            if (e.target === e.currentTarget) closeOrderModal();
           }}
         >
-          <div className="order-modal-card">
+          <div className="order-modal-card" role="dialog" aria-modal="true" aria-label={`${orderModal.type === 'BUY' ? 'Paper buy' : orderModal.type === 'SELL' ? 'Paper sell' : orderModal.type === 'PORTFOLIO' ? 'Add holding' : 'Price alert'} ${orderModal.symbol}`}>
             <div className="order-modal-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <span className={`term-badge font-mono ${orderModal.type === 'BUY' ? 'pos' : orderModal.type === 'SELL' ? 'neg' : 'neutral'}`}>
@@ -1946,7 +1957,7 @@ function App() {
               </div>
               <button
                 className="order-modal-close"
-                onClick={() => !orderModal.isSubmitting && setOrderModal(prev => ({ ...prev, isOpen: false }))}
+                onClick={closeOrderModal}
                 aria-label="Close"
               >
                 <X size={18} />
@@ -2027,11 +2038,12 @@ function App() {
                     </button>
                   </div>
 
-                  <label className="order-input-label" style={{ marginTop: '14px' }}>
+                  <label className="order-input-label" style={{ marginTop: '14px' }} htmlFor="alert-target-price">
                     Target Trigger Price ({orderModal.currency})
                   </label>
                   <div className="order-qty-row">
                     <input
+                      id="alert-target-price"
                       type="number"
                       step="any"
                       min="0.01"
@@ -2044,18 +2056,20 @@ function App() {
                 </div>
               ) : (
                 <div className="order-input-group">
-                  <label className="order-input-label">
+                  <label className="order-input-label" htmlFor="order-quantity">
                     {orderModal.type === 'PORTFOLIO' ? 'Shares to Record' : 'Order Quantity (Shares)'}
                   </label>
                   <div className="order-qty-row">
                     <button
                       type="button"
                       className="order-qty-step-btn"
+                      aria-label="Decrease quantity by 1"
                       onClick={() => setOrderModal(prev => ({ ...prev, qty: Math.max(1, (parseFloat(prev.qty) || 1) - 1), error: '' }))}
                     >
                       -
                     </button>
                     <input
+                      id="order-quantity"
                       type="number"
                       step="any"
                       min="0.0001"
@@ -2068,6 +2082,7 @@ function App() {
                     <button
                       type="button"
                       className="order-qty-step-btn"
+                      aria-label="Increase quantity by 1"
                       onClick={() => setOrderModal(prev => ({ ...prev, qty: (parseFloat(prev.qty) || 0) + 1, error: '' }))}
                     >
                       +
@@ -2081,9 +2096,10 @@ function App() {
                         key={n}
                         type="button"
                         className="order-preset-pill"
+                        aria-label={`Set quantity to ${n}`}
                         onClick={() => setOrderModal(prev => ({ ...prev, qty: n, error: '' }))}
                       >
-                        +{n}
+                        {n}
                       </button>
                     ))}
                     {orderModal.type === 'BUY' && (
@@ -2173,7 +2189,7 @@ function App() {
                 type="button"
                 className="btn btn-secondary"
                 disabled={orderModal.isSubmitting}
-                onClick={() => setOrderModal(prev => ({ ...prev, isOpen: false }))}
+                onClick={closeOrderModal}
               >
                 Cancel
               </button>
