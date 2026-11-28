@@ -18,6 +18,7 @@ const { isFreshAlertQuote, recordAlertReceipt } = require('./services/alertRecei
 const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
+const { rankUniverse } = require('./services/screener');
 const { finnhubSymbol, finnhubFundamentals } = require('./services/fundamentals');
 const { newsQuery, selectStockNews } = require('./services/stockNews');
 const { DEFAULT_MODEL: DEFAULT_ANALYST_MODEL, createAnalyst, parseAnalysisRequest } = require('./services/analyst');
@@ -1091,9 +1092,10 @@ app.get('/api/screener/:type', async (req, res) => {
         }
 
         const cacheKey = `screener_${type}`;
-        const quotes = await getOrLoad(cacheKey, 120, async () => {
+        const { quotes, answered } = await getOrLoad(cacheKey, 120, async () => {
 
             let quotes = [];
+            let answered = false;
 
             // 1. For standard types, attempt Yahoo's predefined screener first during live market hours
             if (['day_gainers', 'day_losers', 'most_actives', 'undervalued_large_caps'].includes(type)) {
@@ -1171,43 +1173,16 @@ app.get('/api/screener/:type', async (req, res) => {
                     }
                 }
 
-                if (validQuotes.length > 0) {
-                    if (type === 'day_gainers') {
-                        quotes = validQuotes.filter(q => Number.isFinite(q.regularMarketChangePercent))
-                            .sort((a, b) => b.regularMarketChangePercent - a.regularMarketChangePercent)
-                            .slice(0, 15);
-                    } else if (type === 'day_losers') {
-                        quotes = validQuotes.filter(q => Number.isFinite(q.regularMarketChangePercent))
-                            .sort((a, b) => a.regularMarketChangePercent - b.regularMarketChangePercent)
-                            .slice(0, 15);
-                    } else if (type === 'most_actives') {
-                        quotes = validQuotes.filter(q => q.regularMarketVolume > 0)
-                            .sort((a, b) => b.regularMarketVolume - a.regularMarketVolume)
-                            .slice(0, 15);
-                    } else if (type === 'undervalued_large_caps') {
-                        quotes = [...validQuotes]
-                            .filter(q => q.currency === 'USD' && q.marketCap >= 40e9 && q.trailingPE > 0)
-                            .sort((a, b) => a.trailingPE - b.trailingPE)
-                            .slice(0, 15);
-                    } else if (type === 'tech_titans') {
-                        quotes = [...validQuotes]
-                            .filter(q => TECH_SYMBOLS.has(q.symbol))
-                            .sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0))
-                            .slice(0, 15);
-                    } else if (type === 'indian_market') {
-                        quotes = [...validQuotes]
-                            .filter(q => q.symbol.endsWith('.NS') || q.symbol.endsWith('.BO'))
-                            .sort((a, b) => b.regularMarketChangePercent - a.regularMarketChangePercent)
-                            .slice(0, 15);
-                    }
-                }
+                // An up day can leave the losers list empty. That is an answer, not an outage.
+                answered = validQuotes.length > 0;
+                quotes = rankUniverse(type, validQuotes, TECH_SYMBOLS);
             }
 
             if (quotes.length > 0) lastKnownScreenerCache[type] = quotes;
-            return quotes;
-        }, { shouldCache: value => value.length > 0 });
+            return { quotes, answered: answered || quotes.length > 0 };
+        }, { shouldCache: value => value.answered });
 
-        res.json(quotes.length > 0 ? quotes : screenerFallback(type));
+        res.json(answered ? quotes : screenerFallback(type));
     } catch (e) {
         console.error(`Screener provider error (${req.params.type}):`, e.message);
         // Fallback to seeded baseline cache even if an unexpected error occurs so UI never blanks out
