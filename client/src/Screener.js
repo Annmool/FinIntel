@@ -175,6 +175,13 @@ function Screener({ onClose, onSelectSymbol }) {
                     </div>
                 )}
 
+                {!loading && !dataStatus && stocks.some(s => s.scope === 'tracked') && (
+                    <p className="panel-subtitle" role="note" style={{ margin: '0 0 12px' }}>
+                        Ranked within FinIntel’s tracked list of large US and Indian stocks, not the whole market.
+                        Hover a row for its quote source and time.
+                    </p>
+                )}
+
                 {error && !loading && (
                     <div className="screener-error" role="alert" style={{ marginBottom: '16px' }}>
                         <div>

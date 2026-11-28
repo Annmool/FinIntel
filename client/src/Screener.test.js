@@ -33,3 +33,16 @@ test('explains an empty losers list instead of asking for a retry', async () => 
   render(<Screener onClose={() => {}} onSelectSymbol={() => {}} />);
   expect(await screen.findByText('None of the tracked stocks rose in the latest session.')).toBeInTheDocument();
 });
+
+test('says when rankings cover only the tracked list', async () => {
+  axios.get.mockResolvedValue({ data: [row({ scope: 'tracked', quoteSource: 'Yahoo Finance chart' })] });
+  const { unmount } = render(<Screener onClose={() => {}} onSelectSymbol={() => {}} />);
+  expect(await screen.findByRole('note')).toHaveTextContent(/tracked list.*not the whole market/);
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  unmount();
+
+  axios.get.mockResolvedValue({ data: [row()] });
+  render(<Screener onClose={() => {}} onSelectSymbol={() => {}} />);
+  expect(await screen.findByText('Apple Inc.')).toBeInTheDocument();
+  expect(screen.queryByRole('note')).not.toBeInTheDocument();
+});

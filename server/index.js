@@ -20,6 +20,7 @@ const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
 const { notFound, errorHandler } = require('./services/httpErrors');
 const { rankUniverse } = require('./services/screener');
+const { loadChartUniverse, mapLimited, valuationFromMetric, withValuations } = require('./services/universeQuotes');
 const { finnhubSymbol, finnhubFundamentals } = require('./services/fundamentals');
 const { newsQuery, selectStockNews } = require('./services/stockNews');
 const { DEFAULT_MODEL: DEFAULT_ANALYST_MODEL, createAnalyst, parseAnalysisRequest } = require('./services/analyst');
@@ -480,6 +481,20 @@ app.get('/api/ticker-tape', async (req, res) => {
             }
         } catch (yErr) {
             console.error("Yahoo Ticker Tape Error:", yErr.message);
+        }
+
+        // Chart data keeps the Indian listings on the tape when Yahoo quotes are refused.
+        if (data.length === 0) {
+            try {
+                data = (await loadChartQuotes(symbols))
+                    .filter(row => Number.isFinite(row.regularMarketChangePercent))
+                    .map(row => ({
+                        symbol: row.symbol, close: row.regularMarketPrice,
+                        percent_change: row.regularMarketChangePercent, currency: row.currency
+                    }));
+            } catch (chartErr) {
+                console.error('Chart Ticker Tape Error:', chartErr.message);
+            }
         }
 
         // Fallback to Finnhub if Yahoo returned nothing
@@ -1047,6 +1062,39 @@ const SEED_SCREENER_CACHE = {
 
 const lastKnownScreenerCache = {};
 
+// Yahoo's chart endpoint answers the hosted API when its quote and screener
+// endpoints do not, so the tracked list can still be priced from real data.
+function fetchUniverseChart(symbol) {
+    return yahooFinance.chart(symbol, { period1: new Date(Date.now() - 10 * 86400000), interval: '1d' }, {
+        validateResult: false, fetchOptions: { signal: AbortSignal.timeout(4500) }
+    });
+}
+
+const universeNames = Object.fromEntries(Object.entries(SEED_INSTRUMENT_META).map(([symbol, meta]) => [symbol, meta.shortName]));
+
+function loadChartQuotes(symbols) {
+    return getOrLoad(`chart_quotes_${symbols.join(',')}`, 120,
+        () => loadChartUniverse(symbols, fetchUniverseChart, { names: universeNames }),
+        { shouldCache: rows => rows.length > 0 });
+}
+
+// Chart data has no market cap or P/E. Finnhub supplies both for US listings;
+// they change slowly, so one pass is kept for twelve hours.
+function loadUniverseValuations() {
+    if (!process.env.FINNHUB_API_KEY) return Promise.resolve({});
+    return getOrLoad('screener_valuations', 12 * 3600, async () => {
+        const listings = SCREENER_UNIVERSE.map(symbol => [symbol, finnhubSymbol(symbol)]).filter(([, ticker]) => ticker);
+        const found = await mapLimited(listings, 4, async ([symbol, ticker]) => {
+            const { data } = await axios.get(`${FINNHUB_URL}/stock/metric`, {
+                params: { symbol: ticker, metric: 'all', token: process.env.FINNHUB_API_KEY }, timeout: 4500
+            });
+            const valuation = valuationFromMetric(ticker, data);
+            return valuation && [symbol, valuation];
+        });
+        return Object.fromEntries(found.filter(Boolean));
+    }, { shouldCache: valuations => Object.keys(valuations).length > 0 });
+}
+
 function screenerFallback(type) {
     const cached = lastKnownScreenerCache[type];
     if (cached) return cached.map(quote => ({ ...quote, dataStatus: 'cached' }));
@@ -1138,7 +1186,20 @@ app.get('/api/screener/:type', async (req, res) => {
                     }
                 }
 
-                // 3. Finnhub Resilience Fallback: If Yahoo failed (e.g. 429 crumb limit), query Finnhub quotes
+                // 3. Chart fallback: real prices for the whole tracked list, including NSE listings.
+                if (validQuotes.length === 0) {
+                    try {
+                        const [rows, valuations] = await Promise.all([
+                            loadChartQuotes(SCREENER_UNIVERSE),
+                            loadUniverseValuations().catch(() => ({}))
+                        ]);
+                        validQuotes = withValuations(rows, valuations);
+                    } catch (chartErr) {
+                        console.warn('Chart universe screener error:', chartErr.message);
+                    }
+                }
+
+                // 4. Finnhub Resilience Fallback: If Yahoo failed (e.g. 429 crumb limit), query Finnhub quotes
                 if (validQuotes.length === 0 && process.env.FINNHUB_API_KEY) {
                     try {
                         const usSymbols = SCREENER_UNIVERSE.filter(s => !s.endsWith('.NS') && !s.endsWith('.BO'));
@@ -1177,7 +1238,7 @@ app.get('/api/screener/:type', async (req, res) => {
 
                 // An up day can leave the losers list empty. That is an answer, not an outage.
                 answered = validQuotes.length > 0;
-                quotes = rankUniverse(type, validQuotes, TECH_SYMBOLS);
+                quotes = rankUniverse(type, validQuotes, TECH_SYMBOLS).map(quote => ({ ...quote, scope: 'tracked' }));
             }
 
             if (quotes.length > 0) lastKnownScreenerCache[type] = quotes;
