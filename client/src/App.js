@@ -55,7 +55,6 @@ import { auth, provider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 
 import { API_URL } from './apiConfig';
-const UPTIMEROBOT_STATUS_URL = 'https://dashboard.uptimerobot.com/monitors/803125214';
 
 function App() {
   const pendingPaperOrder = useRef(null);
@@ -75,6 +74,8 @@ function App() {
   const [paperHistoryRefresh, setPaperHistoryRefresh] = useState(0);
   const [editingHolding, setEditingHolding] = useState(null);
   const [alerts, setAlerts] = useState([]);
+  const [accountStatus, setAccountStatus] = useState('idle'); // 'idle' | 'loading' | 'ready' | 'error'
+  const [apiStatus, setApiStatus] = useState('checking'); // 'checking' | 'online' | 'offline'
   const [theme, setTheme] = useState('dark');
   const [briefing, setBriefing] = useState([]);
   const [briefingLoading, setBriefingLoading] = useState(true);
@@ -194,6 +195,7 @@ function App() {
     const url = `${API_URL}/api/forex/rate?force=${force ? 'true' : 'false'}&_t=${Date.now()}`;
     axios.get(url)
       .then(res => {
+        setApiStatus('online');
         const rateVal = parseFloat(res.data?.rate);
         if (Number.isFinite(rateVal) && rateVal > 0) {
           setFxRate(rateVal);
@@ -226,6 +228,7 @@ function App() {
         }
       })
       .catch(() => {
+        setApiStatus('offline');
         setPortfolioFxRates({});
         if (force) {
           showToast('Using local exchange rates (backend connecting...)', 'error');
@@ -256,24 +259,27 @@ function App() {
   const fetchPaperPortfolio = useCallback(async (uid) => {
     try {
       const { data } = await axios.get(`${API_URL}/api/paper-portfolio/${uid}`);
-      if (auth.currentUser?.uid !== uid) return;
+      if (auth.currentUser?.uid !== uid) return true;
       setPaperPortfolio(data);
-    } catch (e) {}
+      return true;
+    } catch (e) { return false; }
   }, []);
 
   const fetchWatchlist = async (uid) => {
     try {
       const res = await axios.get(`${API_URL}/api/watchlist/${uid}`);
       if (auth.currentUser?.uid === uid) setWatchlist(res.data);
-    } catch (e) {}
+      return true;
+    } catch (e) { return false; }
   };
 
   const fetchPortfolio = useCallback(async (uid) => {
     try {
       const { data } = await axios.get(`${API_URL}/api/portfolio/${uid}`);
-      if (auth.currentUser?.uid !== uid) return;
+      if (auth.currentUser?.uid !== uid) return true;
       setPortfolio(data);
-    } catch (e) {}
+      return true;
+    } catch (e) { return false; }
   }, []);
 
   useEffect(() => {
@@ -327,7 +333,17 @@ function App() {
     try {
       const res = await axios.get(`${API_URL}/api/alerts/${uid}`);
       if (auth.currentUser?.uid === uid) setAlerts(res.data);
-    } catch (e) {}
+      return true;
+    } catch (e) { return false; }
+  };
+
+  // An empty list after a failed request looks like an account with nothing in
+  // it, so the first load reports whether every account request succeeded.
+  const loadAccount = async (uid) => {
+    setAccountStatus('loading');
+    fetchVirtualBalance(uid);
+    const results = await Promise.all([fetchWatchlist(uid), fetchPortfolio(uid), fetchPaperPortfolio(uid), fetchAlerts(uid)]);
+    if (auth.currentUser?.uid === uid) setAccountStatus(results.every(Boolean) ? 'ready' : 'error');
   };
 
   useEffect(() => {
@@ -346,13 +362,8 @@ function App() {
       setPortfolioPrices({});
       setVirtualBalance(null);
       setBalanceLoading(false);
-      if (u) {
-        fetchWatchlist(u.uid);
-        fetchPortfolio(u.uid);
-        fetchPaperPortfolio(u.uid);
-        fetchAlerts(u.uid);
-        fetchVirtualBalance(u.uid);
-      }
+      setAccountStatus('idle');
+      if (u) loadAccount(u.uid);
     });
 
     const fetchBriefing = () => {
@@ -1075,19 +1086,17 @@ function App() {
               </button>
             )}
 
-            <a
-              href={UPTIMEROBOT_STATUS_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="uptime-strip"
-              title="Monitor Uptime"
-            >
+            <div className="uptime-strip" role="status" title="Based on the dashboard's most recent request to the FinIntel API">
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span className="status-dot"></span>
-                <span>System Operational</span>
+                <span
+                  className="status-dot"
+                  style={apiStatus === 'online' ? undefined : { background: apiStatus === 'offline' ? 'var(--danger)' : 'var(--warning)', boxShadow: 'none', animation: 'none' }}
+                ></span>
+                <span>
+                  {apiStatus === 'online' ? 'API connected' : apiStatus === 'offline' ? 'API unreachable' : 'Connecting to API…'}
+                </span>
               </div>
-              <span>100%</span>
-            </a>
+            </div>
             <div className="creator-credit">
               Made by Anmol · <a href="https://heyanmol.netlify.app" target="_blank" rel="noreferrer">Portfolio</a>
             </div>
@@ -1502,6 +1511,17 @@ function App() {
 
 
               </div>
+              {user && accountStatus === 'error' && (
+                <div className="dashboard-span-12 order-validation-msg neg" role="alert" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                  <span>Some of your account data could not be loaded, so lists below may look empty. The server can take up to a minute to wake after a quiet period.</span>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => loadAccount(user.uid)}>Retry</button>
+                </div>
+              )}
+              {apiStatus === 'checking' && (
+                <p className="dashboard-span-12 panel-subtitle" role="status" style={{ margin: 0 }}>
+                  Connecting to the FinIntel API. The first request after a quiet period can take up to a minute.
+                </p>
+              )}
               {/* Question 1 & 2: Multi-Currency Valuation, Cost Basis, Buying Power & Risk Node */}
               <div className="dashboard-span-12">
                 <div className="portfolio-summary-bar">
@@ -1680,6 +1700,10 @@ function App() {
                       </tbody>
                     </table>
                   </div>
+                ) : user && accountStatus === 'loading' ? (
+                  <p role="status" style={{ padding: '36px 16px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.82rem' }}>
+                    Loading your holdings…
+                  </p>
                 ) : (
                   <div className="holdings-empty-state">
                     <div className="empty-icon-wrap">

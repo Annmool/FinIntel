@@ -3,7 +3,7 @@ import App from './App';
 import axios from './apiClient';
 import { auth } from './firebase';
 
-jest.mock('./apiClient', () => ({ get: jest.fn(), post: jest.fn(), patch: jest.fn() }));
+jest.mock('./apiClient', () => ({ get: jest.fn(), post: jest.fn(), patch: jest.fn(), delete: jest.fn() }));
 jest.mock('./firebase', () => ({ auth: { currentUser: null } }));
 jest.mock('firebase/auth', () => ({
   onAuthStateChanged: (auth, callback) => {
@@ -41,7 +41,7 @@ test('records the entered cost and shows the gain on a real holding', async () =
     return { data: holdings[0] };
   });
   render(<App />);
-  fireEvent.click(screen.getByRole('button', { name: 'AAPL' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'AAPL' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Holdings' }));
   const price = screen.getByRole('spinbutton', { name: /purchase price per share.*USD/i });
   const add = screen.getByRole('button', { name: 'Add to Portfolio' });
@@ -159,4 +159,33 @@ test('shows the executed paper trade and pages to older orders', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Older trades' }));
   expect(await screen.findByText('Sell 1 TCS.NS')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Older trades' })).toBeDisabled();
+});
+
+test('says when account data failed to load instead of showing an empty portfolio, and retries', async () => {
+  holdings = [{ _id: 'holding', symbol: 'AAPL', qty: 1, price: 100, currency: 'USD' }];
+  const get = axios.get.getMockImplementation();
+  axios.get.mockImplementation(url => url.includes('/api/portfolio/') ? Promise.reject(new Error('server asleep')) : get(url));
+  render(<App />);
+  expect(screen.getByText('Loading your holdings…')).toBeInTheDocument();
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/account data could not be loaded/i);
+  expect(screen.queryByRole('row', { name: /AAPL/ })).not.toBeInTheDocument();
+
+  axios.get.mockImplementation(get);
+  fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByRole('row', { name: /AAPL/ })).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+test('reports the real API connection instead of a fixed operational badge', async () => {
+  const get = axios.get.getMockImplementation();
+  let failFx;
+  axios.get.mockImplementation(url => url.includes('/api/forex/rate')
+    ? new Promise((resolve, reject) => { failFx = reject; })
+    : get(url));
+  render(<App />);
+  expect(screen.getByText('Connecting to API…')).toBeInTheDocument();
+  expect(screen.queryByText(/System Operational|100%/)).not.toBeInTheDocument();
+  await act(async () => failFx(new Error('offline')));
+  expect(screen.getByText('API unreachable')).toBeInTheDocument();
 });
