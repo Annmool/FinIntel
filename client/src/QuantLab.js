@@ -248,6 +248,12 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
     if (!controller.signal.aborted) setLoading(false);
   }, [symbols, displayedWeights, numSimulations, timeHorizonDays, initialCapital, riskFreeRate, engineMode, presets, selectedPreset]);
 
+  useEffect(() => {
+    const onKeyDown = event => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
   // Initial simulation on mount
   useEffect(() => {
     runSimulation();
@@ -751,7 +757,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
   if (isMobileScreen && !bypassedMobileNotice) {
     return (
       <div className="quant-lab-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-        <div className="quant-desktop-notice-modal">
+        <div className="quant-desktop-notice-modal" role="dialog" aria-modal="true" aria-label="FinIntel Quant Lab">
           <div className="quant-desktop-notice-header">
             <div className="quant-notice-badge">
               <Laptop size={26} color="var(--accent)" />
@@ -807,7 +813,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
 
   return (
     <div className="quant-lab-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="quant-lab-modal">
+      <div className="quant-lab-modal" role="dialog" aria-modal="true" aria-label="FinIntel Quant Lab">
         {/* Modal Top Bar */}
         <div className="quant-header">
           <div className="quant-header-left">
@@ -988,6 +994,8 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                       value={displayedWeights[idx] || 0}
                       onChange={(e) => handleWeightChange(idx, e.target.value)}
                       className="weight-slider"
+                      aria-label={`${sym} weight`}
+                      aria-valuetext={`${pct}%`}
                       style={{ accentColor: color }}
                     />
                   </div>
@@ -1023,8 +1031,9 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
 
             <div className="param-grid-compact">
               <div className="param-field">
-                <label>Simulated Paths</label>
+                <label htmlFor="quant-paths">Simulated Paths</label>
                 <select
+                  id="quant-paths"
                   value={numSimulations}
                   onChange={(e) => setNumSimulations(parseInt(e.target.value))}
                   className="param-select font-mono"
@@ -1037,22 +1046,24 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
               </div>
 
               <div className="param-field">
-                <label>Time Horizon</label>
+                <label htmlFor="quant-horizon">Time Horizon (trading days)</label>
                 <select
+                  id="quant-horizon"
                   value={timeHorizonDays}
                   onChange={(e) => setTimeHorizonDays(parseInt(e.target.value))}
                   className="param-select font-mono"
                 >
-                  <option value={30}>30 Days (1 Month)</option>
-                  <option value={90}>90 Days (1 Quarter)</option>
-                  <option value={180}>180 Days (Half Year)</option>
-                  <option value={252}>252 Days (1 Year)</option>
+                  <option value={30}>30 days (about 6 weeks)</option>
+                  <option value={90}>90 days (about 4 months)</option>
+                  <option value={180}>180 days (about 8.5 months)</option>
+                  <option value={252}>252 days (1 year)</option>
                 </select>
               </div>
 
               <div className="param-field">
-                <label>Initial Capital ($)</label>
+                <label htmlFor="quant-capital">Initial Capital ($)</label>
                 <input
+                  id="quant-capital"
                   type="number"
                   value={initialCapital}
                   onChange={(e) => setInitialCapital(Number(e.target.value))}
@@ -1061,8 +1072,9 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
               </div>
 
               <div className="param-field">
-                <label>Risk-Free Rate (Rf)</label>
+                <label htmlFor="quant-risk-free">Risk-Free Rate (0.045 = 4.5%)</label>
                 <input
+                  id="quant-risk-free"
                   type="number"
                   min="0"
                   max="1"
@@ -1263,7 +1275,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                     <span className="legend-chip"><span className="color-dot bull"></span><span>95th Percentile</span></span>
                     <span className="legend-chip"><span className="color-dot median"></span><span>Median Path</span></span>
                     <span className="legend-chip"><span className="color-dot bear"></span><span>5th Percentile</span></span>
-                    <span className="legend-chip"><span className="color-dot init"></span><span>Starting Value ($100k)</span></span>
+                    <span className="legend-chip"><span className="color-dot init"></span><span>Starting Value{Number.isFinite(result?.cpp?.portfolio?.initialValue) ? ` ($${Math.round(result.cpp.portfolio.initialValue).toLocaleString()})` : ''}</span></span>
                   </div>
                 </div>
               )}
@@ -1345,7 +1357,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                     <span className="risk-badge danger font-mono">Expected Shortfall</span>
                   </div>
                   <span className="risk-value font-mono danger">
-                    ${Math.round(result.cpp.risk.cvar95_dollar || result.cpp.risk.var95_dollar * 1.3).toLocaleString()}
+                    {Number.isFinite(result.cpp.risk.cvar95_dollar) ? `$${Math.round(result.cpp.risk.cvar95_dollar).toLocaleString()}` : '—'}
                   </span>
                   <span className="risk-sub">
                     Expected loss in the worst 5% tail distribution
@@ -1355,7 +1367,7 @@ export default function QuantLab({ onClose, userPortfolio = [], paperPortfolio =
                 <div className="risk-card-modern warning-glow">
                   <div className="risk-header-row">
                     <span className="risk-title">Mean Max Drawdown</span>
-                    <span className="risk-badge warning font-mono">Historical Stress</span>
+                    <span className="risk-badge warning font-mono">Simulated</span>
                   </div>
                   <span className="risk-value font-mono warning">
                     {result.cpp.risk.maxDrawdownMean.toFixed(1)}%

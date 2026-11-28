@@ -40,6 +40,7 @@ test('changing presets or engine does not start cloud runs, and a failed run kee
   axios.post.mockResolvedValueOnce({ data: simulation(9000) });
   render(<QuantLab onClose={() => {}} />);
   expect(await screen.findByText('$9,000')).toBeInTheDocument();
+  expect(screen.getByText('$10,000')).toBeInTheDocument();
   expect(axios.post).toHaveBeenCalledTimes(1);
 
   for (const preset of [/All-Weather/, /Semiconductor/, /Defensive/, /Tech Titans/]) {
@@ -60,4 +61,25 @@ test('changing presets or engine does not start cloud runs, and a failed run kee
   fireEvent.click(screen.getByRole('button', { name: /Execute Cloud/ }));
   expect(await screen.findByText('$7,500')).toBeInTheDocument();
   await waitFor(() => expect(screen.queryByText(/Inputs changed/)).not.toBeInTheDocument());
+});
+
+test('labels its controls, shows the real starting value, and closes on Escape', async () => {
+  const run = simulation(9000);
+  run.cpp.portfolio.initialValue = 5321.4;
+  delete run.cpp.risk.cvar95_dollar;
+  axios.post.mockResolvedValueOnce({ data: run });
+  const onClose = jest.fn();
+  render(<QuantLab onClose={onClose} />);
+  const legend = await screen.findByText(/Starting Value/);
+  await waitFor(() => expect(legend).toHaveTextContent('Starting Value ($5,321)'));
+  expect(legend).not.toHaveTextContent('100k');
+  expect(screen.queryByText('$11,700')).not.toBeInTheDocument();
+  expect(screen.getByText('Conditional VaR (CVaR 95%)').closest('.risk-card-modern')).toHaveTextContent('—');
+  expect(screen.getByRole('dialog', { name: 'FinIntel Quant Lab' })).toBeInTheDocument();
+  expect(screen.getByRole('slider', { name: 'AAPL weight' })).toBeInTheDocument();
+  expect(screen.getByLabelText('Simulated Paths')).toHaveValue('50000');
+  expect(screen.getByLabelText(/Time Horizon/)).toHaveValue('90');
+  expect(screen.getByLabelText(/Risk-Free Rate/)).toHaveValue(0.045);
+  fireEvent.keyDown(window, { key: 'Escape' });
+  expect(onClose).toHaveBeenCalledTimes(1);
 });
