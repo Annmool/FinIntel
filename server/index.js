@@ -18,6 +18,7 @@ const { isFreshAlertQuote, recordAlertReceipt } = require('./services/alertRecei
 const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
+const { finnhubSymbol, finnhubFundamentals } = require('./services/fundamentals');
 const { newsQuery, selectStockNews } = require('./services/stockNews');
 const { DEFAULT_MODEL: DEFAULT_ANALYST_MODEL, createAnalyst } = require('./services/analyst');
 const YahooFinance = require('yahoo-finance2').default;
@@ -549,29 +550,25 @@ app.get('/api/news/:symbol', async (req, res) => {
 
 // Fundamentals
 app.get('/api/fundamentals/:symbol', async (req, res) => {
-    let rawSymbol = req.params.symbol.toUpperCase();
-    let cleanSymbol = rawSymbol.split(':')[0].replace('.NS', '').replace('.BO', '');
-    const isUSStock = !rawSymbol.includes('.') && !rawSymbol.includes(':');
-    
+    const rawSymbol = req.params.symbol.trim().toUpperCase();
+    if (!stockSymbolPattern.test(rawSymbol)) return res.status(400).json({ error: 'Provide a valid ticker symbol.' });
+    const finnhubTicker = finnhubSymbol(rawSymbol);
+
     const cacheKey = `fund_${rawSymbol}`;
 
     try {
         const data = await getOrLoad(cacheKey, 3600, async () => {
         let data = {};
-        if (isUSStock && process.env.FINNHUB_API_KEY) {
+        if (finnhubTicker && process.env.FINNHUB_API_KEY) {
             try {
+                const params = { symbol: finnhubTicker, token: process.env.FINNHUB_API_KEY };
                 const [profileRes, metricRes] = await Promise.all([
-                    axios.get(`${FINNHUB_URL}/stock/profile2?symbol=${cleanSymbol}&token=${process.env.FINNHUB_API_KEY}`),
-                    axios.get(`${FINNHUB_URL}/stock/metric?symbol=${cleanSymbol}&metric=all&token=${process.env.FINNHUB_API_KEY}`)
+                    axios.get(`${FINNHUB_URL}/stock/profile2`, { params }),
+                    axios.get(`${FINNHUB_URL}/stock/metric`, { params: { ...params, metric: 'all' } })
                 ]);
-                if (profileRes.data && (profileRes.data.ticker || profileRes.data.currency)) {
-                    data = { 
-                        profile: { ...profileRes.data, currency: profileRes.data.currency || 'USD' }, 
-                        metrics: metricRes.data?.metric || {} 
-                    };
-                }
+                data = finnhubFundamentals(finnhubTicker, profileRes.data, metricRes.data) || {};
             } catch (fhErr) {
-                console.log(`Finnhub unavailable for ${cleanSymbol} (${fhErr.message}). Using Yahoo Finance.`);
+                console.log(`Finnhub unavailable for ${finnhubTicker} (${fhErr.message}). Using Yahoo Finance.`);
             }
         }
 
