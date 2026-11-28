@@ -54,6 +54,10 @@ function Screener({ onClose, onSelectSymbol }) {
         return formatLargeCap(cap, cur);
     };
 
+    // Sample rows outrank cached ones: one fixed example row makes the list unsafe to read as current.
+    const dataStatus = stocks.some(s => s.dataStatus === 'sample') ? 'sample'
+        : stocks.some(s => s.dataStatus === 'cached') ? 'cached' : null;
+
     const filteredStocks = stocks.filter(s => {
         if (!searchTerm) return true;
         const q = searchTerm.toLowerCase();
@@ -70,7 +74,7 @@ function Screener({ onClose, onSelectSymbol }) {
                     <span>Back to Overview</span>
                 </button>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span className="term-badge neutral">{stocks[0]?.dataStatus === 'sample' ? 'Sample data' : stocks[0]?.dataStatus === 'cached' ? 'Last available data' : 'Market screener'}</span>
+                    <span className="term-badge neutral">{dataStatus === 'sample' ? 'Sample data' : dataStatus === 'cached' ? 'Last available data' : 'Market screener'}</span>
                     <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
                         {stocks.length} instruments loaded
                     </span>
@@ -156,6 +160,20 @@ function Screener({ onClose, onSelectSymbol }) {
                         Indian Equities (NSE)
                     </button>
                 </div>
+
+                {!loading && dataStatus && (
+                    <div className="screener-error" role="status" style={{ marginBottom: '16px' }}>
+                        <div>
+                            <strong>{dataStatus === 'sample' ? 'Sample data, not current prices' : 'Last available data'}</strong>
+                            <span>
+                                {dataStatus === 'sample'
+                                    ? 'The live quote feed is unavailable for this list. These rows are fixed examples for layout only. Open a chart for a recent closing price.'
+                                    : 'The live quote feed is unavailable. These rows are from the last successful update and may be out of date.'}
+                            </span>
+                        </div>
+                        <button className="btn btn-secondary btn-sm" onClick={() => fetchScreener(filterType)}>Retry</button>
+                    </div>
+                )}
 
                 {error && !loading && (
                     <div className="screener-error" role="alert" style={{ marginBottom: '16px' }}>
