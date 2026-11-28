@@ -1184,6 +1184,7 @@ function App() {
               {symbol ? (
                 <button
                   className="search-clear-btn"
+                  aria-label="Clear search"
                   onClick={() => { setSymbol(''); setSuggestions([]); setShowSuggestions(false); }}
                 >
                   <X size={14} />
@@ -1282,7 +1283,7 @@ function App() {
                   <div
                     key={i}
                     className="news-article-card"
-                    onClick={() => window.open(n.url, '_blank')}
+                    onClick={() => window.open(n.url, '_blank', 'noopener,noreferrer')}
                   >
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
@@ -1455,7 +1456,7 @@ function App() {
                       <div
                         key={i}
                         className="news-article-card"
-                        onClick={() => window.open(n.url, '_blank')}
+                        onClick={() => window.open(n.url, '_blank', 'noopener,noreferrer')}
                       >
                         <div>
                           <span className="news-source-badge">{n.source?.name || 'Filing'}</span>
@@ -1822,7 +1823,7 @@ function App() {
                     {briefing.slice(0, 5).map((n, i) => (
                       <div
                         key={i}
-                        onClick={() => window.open(n.url, '_blank')}
+                        onClick={() => window.open(n.url, '_blank', 'noopener,noreferrer')}
                         style={{
                           padding: '10px 12px',
                           background: 'var(--bg-surface-elevated)',
