@@ -20,7 +20,8 @@ const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
 const { finnhubSymbol, finnhubFundamentals } = require('./services/fundamentals');
 const { newsQuery, selectStockNews } = require('./services/stockNews');
-const { DEFAULT_MODEL: DEFAULT_ANALYST_MODEL, createAnalyst } = require('./services/analyst');
+const { DEFAULT_MODEL: DEFAULT_ANALYST_MODEL, createAnalyst, parseAnalysisRequest } = require('./services/analyst');
+const { createRefreshGate } = require('./services/refreshGate');
 const YahooFinance = require('yahoo-finance2').default;
 const yahooFinance = new YahooFinance({
     suppressNotices: ['yahooSurvey'],
@@ -780,19 +781,20 @@ async function loadGlobalFxRates() {
     };
 }
 
+// The primary feed publishes once a day and every open dashboard polls each
+// minute, so rates are held for five minutes. A requested refresh reaches the
+// providers at most once a minute across all callers.
+const allowFxRefresh = createRefreshGate(60 * 1000);
 async function getGlobalFxQuote(forceRefresh = false) {
-    if (forceRefresh) myCache.del('GLOBAL_FX_RATES');
-    const servedFromCache = !forceRefresh && myCache.get('GLOBAL_FX_RATES') !== undefined;
-    const quote = await getOrLoad('GLOBAL_FX_RATES', 60, loadGlobalFxRates);
+    if (forceRefresh && allowFxRefresh()) myCache.del('GLOBAL_FX_RATES');
+    const servedFromCache = myCache.get('GLOBAL_FX_RATES') !== undefined;
+    const quote = await getOrLoad('GLOBAL_FX_RATES', 300, loadGlobalFxRates);
     return { ...quote, cached: servedFromCache };
 }
 
 // Forex Rate Endpoint (Multi-Currency Support with Instant Cache Invalidation & Auto-Refresh)
 app.get('/api/forex/rate', async (req, res) => {
     const force = req.query.force === 'true' || req.query.refresh === 'true';
-    if (force) {
-        myCache.del('GLOBAL_FX_RATES');
-    }
     try {
         const quote = await getGlobalFxQuote(force);
         const { rates } = quote;
@@ -827,7 +829,6 @@ app.get('/api/forex/rate', async (req, res) => {
 
 // Explicit Cache Flush Endpoint
 app.post('/api/forex/refresh', async (req, res) => {
-    myCache.del('GLOBAL_FX_RATES');
     const quote = await getGlobalFxQuote(true);
     const { rates } = quote;
     res.json({
@@ -1249,16 +1250,12 @@ app.delete('/api/alerts/:id', async (req, res) => {
 // --- 6. AI Analyst ---
 app.post('/api/ai-analysis', aiAnalysisLimiter, async (req, res) => {
     try {
-        const { symbol, price, rsi, sentiment, news, currency } = req.body;
-        const curCode = currency ? currency.toUpperCase() : inferCurrencyFromSymbol(symbol);
-        const curSym = getCurrencySymbol(curCode);
-        const newsItems = Array.isArray(news) ? news : [];
-        const newsSummary = newsItems.slice(0, 2).map(n => n?.title || '').filter(Boolean).join(". ");
-        
-        res.json(await summarizeStock({
-            symbol, price, currencySymbol: curSym, currencyCode: curCode, rsi, sentiment,
-            headlines: newsSummary ? [newsSummary] : []
-        }));
+        const request = parseAnalysisRequest(req.body, stockSymbolPattern);
+        if (!request) {
+            return res.status(400).json({ error: 'Provide a valid symbol, price, RSI, sentiment, and currency.' });
+        }
+        const curCode = request.currencyCode || inferCurrencyFromSymbol(request.symbol);
+        res.json(await summarizeStock({ ...request, currencySymbol: getCurrencySymbol(curCode), currencyCode: curCode }));
     } catch (error) {
         res.status(500).json({ error: 'Could not generate an indicator summary.' });
     }

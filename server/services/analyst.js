@@ -31,4 +31,29 @@ function createAnalyst({ groq, model = DEFAULT_MODEL, log = console.error }) {
   };
 }
 
-module.exports = { DEFAULT_MODEL, createAnalyst, indicatorSummary };
+const SENTIMENTS = new Set(['Bullish', 'Bearish', 'Neutral', 'Unavailable']);
+
+// The endpoint is public, so everything that reaches the prompt is checked.
+function parseAnalysisRequest(body, symbolPattern) {
+  const { symbol, price, rsi, sentiment, news, currency } = body ?? {};
+  const cleanSymbol = typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+  const parsedPrice = ['number', 'string'].includes(typeof price) ? Number(price) : NaN;
+  const hasRsi = rsi !== null && rsi !== undefined && rsi !== '';
+  const parsedRsi = ['number', 'string'].includes(typeof rsi) ? Number(rsi) : NaN;
+  const currencyCode = typeof currency === 'string' ? currency.trim().toUpperCase() : undefined;
+  if (!symbolPattern.test(cleanSymbol) || !Number.isFinite(parsedPrice) || parsedPrice <= 0 ||
+      (hasRsi && !(parsedRsi >= 0 && parsedRsi <= 100)) ||
+      (sentiment !== undefined && !SENTIMENTS.has(sentiment)) ||
+      (currency !== undefined && !/^[A-Z]{3}$/.test(currencyCode ?? ''))) {
+    return null;
+  }
+  const headlines = (Array.isArray(news) ? news : []).slice(0, 2)
+    .map(item => typeof item?.title === 'string' ? item.title.replace(/\s+/g, ' ').trim().slice(0, 200) : '')
+    .filter(Boolean);
+  return {
+    symbol: cleanSymbol, price: parsedPrice, currencyCode, headlines,
+    rsi: hasRsi ? parsedRsi.toFixed(2) : null, sentiment: sentiment ?? 'Unavailable'
+  };
+}
+
+module.exports = { DEFAULT_MODEL, createAnalyst, indicatorSummary, parseAnalysisRequest };
