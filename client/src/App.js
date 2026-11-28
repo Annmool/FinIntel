@@ -509,7 +509,7 @@ function App() {
       const existingItem = watchlist.find(item => item.symbol === currentSymbol);
       if (existingItem) {
         try {
-          await axios.delete(`${API_URL}/api/watchlist/${currUser.uid}/${currentSymbol}`);
+          await axios.delete(`${API_URL}/api/watchlist/${currUser.uid}/${encodeURIComponent(currentSymbol)}`);
           fetchWatchlist(currUser.uid);
           showToast(`Removed ${currentSymbol} from watchlist`);
         } catch (e) {
@@ -999,10 +999,15 @@ function App() {
                   className="sidebar-item-del"
                   onClick={async (e) => {
                     e.stopPropagation();
-                    await axios.delete(`${API_URL}/api/watchlist/${user.uid}/${item.symbol}`);
+                    try {
+                      await axios.delete(`${API_URL}/api/watchlist/${user.uid}/${encodeURIComponent(item.symbol)}`);
+                    } catch (error) {
+                      showToast(`Could not remove ${item.symbol}. Try again.`, 'error');
+                    }
                     fetchWatchlist(user.uid);
                   }}
                   title="Remove from Watchlist"
+                  aria-label={`Remove ${item.symbol} from watchlist`}
                 >
                   ✕
                 </button>
@@ -1044,8 +1049,13 @@ function App() {
                 </div>
                 <button
                   className="sidebar-item-del"
+                  aria-label={`Delete ${a.symbol} price trigger`}
                   onClick={async () => {
-                    await axios.delete(`${API_URL}/api/alerts/${a._id}`);
+                    try {
+                      await axios.delete(`${API_URL}/api/alerts/${a._id}`);
+                    } catch (error) {
+                      showToast(`Could not delete the ${a.symbol} trigger. Try again.`, 'error');
+                    }
                     fetchAlerts(user.uid);
                   }}
                 >
@@ -1684,9 +1694,14 @@ function App() {
                                   <button
                                     className="btn btn-danger btn-sm"
                                     onClick={async () => {
-                                      await axios.delete(`${API_URL}/api/portfolio/${p._id}`);
+                                      if (!window.confirm(`Remove ${p.qty} ${p.symbol} from your portfolio? Its purchase price history is deleted too.`)) return;
+                                      try {
+                                        await axios.delete(`${API_URL}/api/portfolio/${p._id}`);
+                                        showToast(`Removed ${p.symbol} from portfolio`);
+                                      } catch (e) {
+                                        showToast(`Could not remove ${p.symbol}. Try again.`, 'error');
+                                      }
                                       fetchPortfolio(user.uid);
-                                      showToast(`Removed ${p.symbol} from portfolio`);
                                     }}
                                     title="Delete holding"
                                   >

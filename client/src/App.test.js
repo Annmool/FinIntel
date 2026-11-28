@@ -189,3 +189,27 @@ test('reports the real API connection instead of a fixed operational badge', asy
   await act(async () => failFx(new Error('offline')));
   expect(screen.getByText('API unreachable')).toBeInTheDocument();
 });
+
+test('asks before removing a holding and reports a failed removal', async () => {
+  holdings = [{ _id: 'holding', symbol: 'AAPL', qty: 2, price: 100, currency: 'USD' }];
+  const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
+  axios.delete.mockReset();
+  render(<App />);
+  const remove = await screen.findByRole('button', { name: 'Remove' });
+  fireEvent.click(remove);
+  expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/Remove 2 AAPL/));
+  expect(axios.delete).not.toHaveBeenCalled();
+
+  confirm.mockReturnValue(true);
+  axios.delete.mockRejectedValueOnce(new Error('offline'));
+  fireEvent.click(remove);
+  expect(await screen.findByText('Could not remove AAPL. Try again.')).toBeInTheDocument();
+  expect(screen.getByRole('row', { name: /AAPL/ })).toBeInTheDocument();
+
+  axios.delete.mockImplementationOnce(async () => { holdings = []; return { data: 'Deleted' }; });
+  fireEvent.click(remove);
+  expect(await screen.findByText('Removed AAPL from portfolio')).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole('row', { name: /AAPL/ })).not.toBeInTheDocument());
+  expect(axios.delete).toHaveBeenLastCalledWith(expect.stringContaining('/api/portfolio/holding'));
+  confirm.mockRestore();
+});
