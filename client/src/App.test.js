@@ -3,7 +3,7 @@ import App from './App';
 import axios from './apiClient';
 import { auth } from './firebase';
 
-jest.mock('./apiClient', () => ({ get: jest.fn(), post: jest.fn(), patch: jest.fn() }));
+jest.mock('./apiClient', () => ({ get: jest.fn(), post: jest.fn(), patch: jest.fn(), delete: jest.fn() }));
 jest.mock('./firebase', () => ({ auth: { currentUser: null } }));
 jest.mock('firebase/auth', () => ({
   onAuthStateChanged: (auth, callback) => {
@@ -41,7 +41,7 @@ test('records the entered cost and shows the gain on a real holding', async () =
     return { data: holdings[0] };
   });
   render(<App />);
-  fireEvent.click(screen.getByRole('button', { name: 'AAPL' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'AAPL' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Holdings' }));
   const price = screen.getByRole('spinbutton', { name: /purchase price per share.*USD/i });
   const add = screen.getByRole('button', { name: 'Add to Portfolio' });
@@ -159,4 +159,112 @@ test('shows the executed paper trade and pages to older orders', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Older trades' }));
   expect(await screen.findByText('Sell 1 TCS.NS')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Older trades' })).toBeDisabled();
+});
+
+test('says when account data failed to load instead of showing an empty portfolio, and retries', async () => {
+  holdings = [{ _id: 'holding', symbol: 'AAPL', qty: 1, price: 100, currency: 'USD' }];
+  const get = axios.get.getMockImplementation();
+  axios.get.mockImplementation(url => url.includes('/api/portfolio/') ? Promise.reject(new Error('server asleep')) : get(url));
+  render(<App />);
+  expect(screen.getByText('Loading your holdings…')).toBeInTheDocument();
+  const alert = await screen.findByRole('alert');
+  expect(alert).toHaveTextContent(/account data could not be loaded/i);
+  expect(screen.queryByRole('row', { name: /AAPL/ })).not.toBeInTheDocument();
+
+  axios.get.mockImplementation(get);
+  fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByRole('row', { name: /AAPL/ })).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+test('reports the real API connection instead of a fixed operational badge', async () => {
+  const get = axios.get.getMockImplementation();
+  let failFx;
+  axios.get.mockImplementation(url => url.includes('/api/forex/rate')
+    ? new Promise((resolve, reject) => { failFx = reject; })
+    : get(url));
+  render(<App />);
+  expect(screen.getByText('Connecting to API…')).toBeInTheDocument();
+  expect(screen.queryByText(/System Operational|100%/)).not.toBeInTheDocument();
+  await act(async () => failFx(new Error('offline')));
+  expect(screen.getByText('API unreachable')).toBeInTheDocument();
+});
+
+test('asks before removing a holding and reports a failed removal', async () => {
+  holdings = [{ _id: 'holding', symbol: 'AAPL', qty: 2, price: 100, currency: 'USD' }];
+  const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
+  axios.delete.mockReset();
+  render(<App />);
+  const remove = await screen.findByRole('button', { name: 'Remove' });
+  fireEvent.click(remove);
+  expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/Remove 2 AAPL/));
+  expect(axios.delete).not.toHaveBeenCalled();
+
+  confirm.mockReturnValue(true);
+  axios.delete.mockRejectedValueOnce(new Error('offline'));
+  fireEvent.click(remove);
+  expect(await screen.findByText('Could not remove AAPL. Try again.')).toBeInTheDocument();
+  expect(screen.getByRole('row', { name: /AAPL/ })).toBeInTheDocument();
+
+  axios.delete.mockImplementationOnce(async () => { holdings = []; return { data: 'Deleted' }; });
+  fireEvent.click(remove);
+  expect(await screen.findByText('Removed AAPL from portfolio')).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByRole('row', { name: /AAPL/ })).not.toBeInTheDocument());
+  expect(axios.delete).toHaveBeenLastCalledWith(expect.stringContaining('/api/portfolio/holding'));
+  confirm.mockRestore();
+});
+
+test('keeps the chosen theme after a reload', async () => {
+  const { unmount } = render(<App />);
+  expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  fireEvent.click(screen.getAllByRole('button', { name: 'Toggle Theme' })[0]);
+  expect(document.documentElement).toHaveAttribute('data-theme', 'light');
+  unmount();
+  render(<App />);
+  expect(document.documentElement).toHaveAttribute('data-theme', 'light');
+  await screen.findByText('$0.00 Sim Cash');
+});
+
+test('a reopened paper ticket recovers an unconfirmed order before starting a new one', async () => {
+  // jsdom has no crypto.randomUUID; browsers provide it on https and localhost.
+  let nextId = 0;
+  Object.defineProperty(window, 'crypto', { configurable: true, value: { randomUUID: () => 'order-id-0000000' + (nextId += 1) } });
+  const sent = [];
+  axios.post.mockImplementation(async (url, body) => {
+    sent.push(body.orderId);
+    if (sent.length < 3) throw new Error('response lost');
+    return { data: { currency: 'USD', executedPrice: 100, quoteSource: 'Fixture' } };
+  });
+  render(<App />);
+  fireEvent.click(await screen.findByRole('button', { name: 'AAPL' }));
+  const openTicket = async () => {
+    fireEvent.click(await screen.findByRole('button', { name: 'Paper Buy' }));
+    return screen.getByRole('dialog', { name: 'Paper buy AAPL' });
+  };
+
+  let ticket = await openTicket();
+  fireEvent.click(within(ticket).getByRole('button', { name: 'Set quantity to 5' }));
+  expect(within(ticket).getByLabelText(/Order Quantity/)).toHaveValue(5);
+  const execute = within(ticket).getByRole('button', { name: 'Execute Paper Buy' });
+  fireEvent.click(execute);
+  expect(await within(ticket).findByText('response lost')).toBeInTheDocument();
+  fireEvent.click(execute);
+  await waitFor(() => expect(sent).toHaveLength(2));
+  expect(sent[1]).toBe(sent[0]);
+
+  fireEvent.keyDown(window, { key: 'Escape' });
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+  ticket = await openTicket();
+  fireEvent.click(within(ticket).getByRole('button', { name: 'Set quantity to 5' }));
+  expect(within(ticket).getByRole('status')).toHaveTextContent(/previous submission.*unconfirmed/i);
+  fireEvent.click(within(ticket).getByRole('button', { name: 'Execute Paper Buy' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(sent[2]).toBe(sent[0]);
+
+  ticket = await openTicket();
+  fireEvent.click(within(ticket).getByRole('button', { name: 'Set quantity to 5' }));
+  fireEvent.click(within(ticket).getByRole('button', { name: 'Execute Paper Buy' }));
+  await waitFor(() => expect(sent).toHaveLength(4));
+  expect(sent[3]).not.toBe(sent[0]);
 });

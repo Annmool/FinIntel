@@ -54,6 +54,10 @@ function Screener({ onClose, onSelectSymbol }) {
         return formatLargeCap(cap, cur);
     };
 
+    // Sample rows outrank cached ones: one fixed example row makes the list unsafe to read as current.
+    const dataStatus = stocks.some(s => s.dataStatus === 'sample') ? 'sample'
+        : stocks.some(s => s.dataStatus === 'cached') ? 'cached' : null;
+
     const filteredStocks = stocks.filter(s => {
         if (!searchTerm) return true;
         const q = searchTerm.toLowerCase();
@@ -70,7 +74,7 @@ function Screener({ onClose, onSelectSymbol }) {
                     <span>Back to Overview</span>
                 </button>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span className="term-badge neutral">{stocks[0]?.dataStatus === 'sample' ? 'Sample data' : stocks[0]?.dataStatus === 'cached' ? 'Last available data' : 'Market screener'}</span>
+                    <span className="term-badge neutral">{dataStatus === 'sample' ? 'Sample data' : dataStatus === 'cached' ? 'Last available data' : 'Market screener'}</span>
                     <span className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
                         {stocks.length} instruments loaded
                     </span>
@@ -156,6 +160,27 @@ function Screener({ onClose, onSelectSymbol }) {
                         Indian Equities (NSE)
                     </button>
                 </div>
+
+                {!loading && dataStatus && (
+                    <div className="screener-error" role="status" style={{ marginBottom: '16px' }}>
+                        <div>
+                            <strong>{dataStatus === 'sample' ? 'Sample data, not current prices' : 'Last available data'}</strong>
+                            <span>
+                                {dataStatus === 'sample'
+                                    ? 'The live quote feed is unavailable for this list. These rows are fixed examples for layout only. Open a chart for a recent closing price.'
+                                    : 'The live quote feed is unavailable. These rows are from the last successful update and may be out of date.'}
+                            </span>
+                        </div>
+                        <button className="btn btn-secondary btn-sm" onClick={() => fetchScreener(filterType)}>Retry</button>
+                    </div>
+                )}
+
+                {!loading && !dataStatus && stocks.some(s => s.scope === 'tracked') && (
+                    <p className="panel-subtitle" role="note" style={{ margin: '0 0 12px' }}>
+                        Ranked within FinIntel’s tracked list of large US and Indian stocks, not the whole market.
+                        Hover a row for its quote source and time.
+                    </p>
+                )}
 
                 {error && !loading && (
                     <div className="screener-error" role="alert" style={{ marginBottom: '16px' }}>
@@ -250,7 +275,10 @@ function Screener({ onClose, onSelectSymbol }) {
                                 {filteredStocks.length === 0 && !loading && (
                                     <tr>
                                         <td colSpan={9} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-tertiary)' }}>
-                                            {searchTerm ? 'No securities matched your search term.' : 'No securities returned for this category. Click Retry to reload.'}
+                                            {searchTerm ? 'No securities matched your search term.'
+                                                : filterType === 'day_losers' ? 'No declines were reported for tracked stocks with available session data.'
+                                                : filterType === 'day_gainers' ? 'No gains were reported for tracked stocks with available session data.'
+                                                : 'No securities returned for this category. Use refresh to reload.'}
                                         </td>
                                     </tr>
                                 )}

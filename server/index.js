@@ -18,6 +18,13 @@ const { isFreshAlertQuote, recordAlertReceipt } = require('./services/alertRecei
 const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
+const { notFound, errorHandler } = require('./services/httpErrors');
+const { hasScreenerCoverage, rankUniverse } = require('./services/screener');
+const { loadChartUniverse, mapLimited, valuationFromMetric, withValuations } = require('./services/universeQuotes');
+const { finnhubSymbol, finnhubFundamentals } = require('./services/fundamentals');
+const { newsQuery, selectStockNews } = require('./services/stockNews');
+const { DEFAULT_MODEL: DEFAULT_ANALYST_MODEL, createAnalyst, parseAnalysisRequest } = require('./services/analyst');
+const { createRefreshGate } = require('./services/refreshGate');
 const YahooFinance = require('yahoo-finance2').default;
 const yahooFinance = new YahooFinance({
     suppressNotices: ['yahooSurvey'],
@@ -57,6 +64,7 @@ const myCache = new NodeCache({ stdTTL: 60, checkperiod: 120, useClones: false }
 const inFlightRequests = new Map();
 axios.defaults.timeout = 10000;
 const groq = new Groq({ apiKey: process.env.GROQ_KEY });
+const summarizeStock = createAnalyst({ groq, model: process.env.GROQ_MODEL || DEFAULT_ANALYST_MODEL });
 
 admin.initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'finintel-a64ec' });
 
@@ -475,6 +483,20 @@ app.get('/api/ticker-tape', async (req, res) => {
             console.error("Yahoo Ticker Tape Error:", yErr.message);
         }
 
+        // Chart data keeps the Indian listings on the tape when Yahoo quotes are refused.
+        if (data.length === 0) {
+            try {
+                data = (await loadChartQuotes(symbols))
+                    .filter(row => Number.isFinite(row.regularMarketChangePercent))
+                    .map(row => ({
+                        symbol: row.symbol, close: row.regularMarketPrice,
+                        percent_change: row.regularMarketChangePercent, currency: row.currency
+                    }));
+            } catch (chartErr) {
+                console.error('Chart Ticker Tape Error:', chartErr.message);
+            }
+        }
+
         // Fallback to Finnhub if Yahoo returned nothing
         if (data.length === 0 && process.env.FINNHUB_API_KEY) {
             const usSymbols = ["AAPL", "TSLA", "MSFT", "AMZN", "GOOGL"];
@@ -535,17 +557,10 @@ app.get('/api/market-briefing', async (req, res) => {
 app.get('/api/news/:symbol', async (req, res) => {
     try {
         const rawSymbol = req.params.symbol.trim().toUpperCase();
-        const cleanSymbol = rawSymbol.split(':')[0].replace('.NS', '').replace('.BO', '');
+        if (!stockSymbolPattern.test(rawSymbol)) return res.json([]);
         const articles = await getOrLoad(`news_${rawSymbol}`, 300, async () => {
-            const ySearch = await yahooFinance.search(cleanSymbol, {}, { validateResult: false });
-            return (ySearch.news || []).slice(0, 5).map(item => ({
-                title: item.title,
-                url: item.link,
-                urlToImage: item.thumbnail?.resolutions?.[0]?.url || null,
-                source: { name: item.publisher },
-                publishedAt: item.providerPublishTime,
-                sentimentScore: sentiment.analyze(item.title || "").score
-            }));
+            const ySearch = await yahooFinance.search(newsQuery(rawSymbol), { newsCount: 20 }, { validateResult: false });
+            return selectStockNews(rawSymbol, ySearch.news, title => sentiment.analyze(title || "").score);
         }, { shouldCache: value => Array.isArray(value) && value.length > 0 });
         res.json(articles);
     } catch (e) { res.json([]); }
@@ -553,29 +568,25 @@ app.get('/api/news/:symbol', async (req, res) => {
 
 // Fundamentals
 app.get('/api/fundamentals/:symbol', async (req, res) => {
-    let rawSymbol = req.params.symbol.toUpperCase();
-    let cleanSymbol = rawSymbol.split(':')[0].replace('.NS', '').replace('.BO', '');
-    const isUSStock = !rawSymbol.includes('.') && !rawSymbol.includes(':');
-    
+    const rawSymbol = req.params.symbol.trim().toUpperCase();
+    if (!stockSymbolPattern.test(rawSymbol)) return res.status(400).json({ error: 'Provide a valid ticker symbol.' });
+    const finnhubTicker = finnhubSymbol(rawSymbol);
+
     const cacheKey = `fund_${rawSymbol}`;
 
     try {
         const data = await getOrLoad(cacheKey, 3600, async () => {
         let data = {};
-        if (isUSStock && process.env.FINNHUB_API_KEY) {
+        if (finnhubTicker && process.env.FINNHUB_API_KEY) {
             try {
+                const params = { symbol: finnhubTicker, token: process.env.FINNHUB_API_KEY };
                 const [profileRes, metricRes] = await Promise.all([
-                    axios.get(`${FINNHUB_URL}/stock/profile2?symbol=${cleanSymbol}&token=${process.env.FINNHUB_API_KEY}`),
-                    axios.get(`${FINNHUB_URL}/stock/metric?symbol=${cleanSymbol}&metric=all&token=${process.env.FINNHUB_API_KEY}`)
+                    axios.get(`${FINNHUB_URL}/stock/profile2`, { params }),
+                    axios.get(`${FINNHUB_URL}/stock/metric`, { params: { ...params, metric: 'all' } })
                 ]);
-                if (profileRes.data && (profileRes.data.ticker || profileRes.data.currency)) {
-                    data = { 
-                        profile: { ...profileRes.data, currency: profileRes.data.currency || 'USD' }, 
-                        metrics: metricRes.data?.metric || {} 
-                    };
-                }
+                data = finnhubFundamentals(finnhubTicker, profileRes.data, metricRes.data) || {};
             } catch (fhErr) {
-                console.log(`Finnhub unavailable for ${cleanSymbol} (${fhErr.message}). Using Yahoo Finance.`);
+                console.log(`Finnhub unavailable for ${finnhubTicker} (${fhErr.message}). Using Yahoo Finance.`);
             }
         }
 
@@ -622,11 +633,11 @@ app.get('/api/watchlist/:userId', async (req, res) => {
 });
 
 app.post('/api/watchlist', async (req, res) => {
-    const { symbol } = req.body;
-    if (!symbol || typeof symbol !== 'string') {
-        return res.status(400).json({ error: "Invalid symbol or userId" });
+    const { symbol } = req.body ?? {};
+    const cleanSym = typeof symbol === 'string' ? symbol.trim().toUpperCase() : '';
+    if (!stockSymbolPattern.test(cleanSym)) {
+        return res.status(400).json({ error: 'Provide a valid ticker symbol.' });
     }
-    const cleanSym = symbol.trim().toUpperCase();
     const exists = await Watchlist.findOne({ symbol: cleanSym, userId: req.user.uid });
     if (exists) return res.status(400).send("Exists");
     const newItem = new Watchlist({ symbol: cleanSym, userId: req.user.uid });
@@ -681,6 +692,7 @@ app.patch('/api/portfolio/:id/cost', async (req, res) => {
 });
 
 app.delete('/api/portfolio/:id', async (req, res) => {
+    if (!mongoose.isObjectIdOrHexString(req.params.id)) return res.status(404).json({ error: 'Holding not found.' });
     const deleted = await Portfolio.findOneAndDelete({ _id: req.params.id, userId: req.user.uid });
     if (!deleted) return res.status(404).json({ error: 'Holding not found.' });
     res.send("Deleted");
@@ -787,19 +799,20 @@ async function loadGlobalFxRates() {
     };
 }
 
+// The primary feed publishes once a day and every open dashboard polls each
+// minute, so rates are held for five minutes. A requested refresh reaches the
+// providers at most once a minute across all callers.
+const allowFxRefresh = createRefreshGate(60 * 1000);
 async function getGlobalFxQuote(forceRefresh = false) {
-    if (forceRefresh) myCache.del('GLOBAL_FX_RATES');
-    const servedFromCache = !forceRefresh && myCache.get('GLOBAL_FX_RATES') !== undefined;
-    const quote = await getOrLoad('GLOBAL_FX_RATES', 60, loadGlobalFxRates);
+    if (forceRefresh && allowFxRefresh()) myCache.del('GLOBAL_FX_RATES');
+    const servedFromCache = myCache.get('GLOBAL_FX_RATES') !== undefined;
+    const quote = await getOrLoad('GLOBAL_FX_RATES', 300, loadGlobalFxRates);
     return { ...quote, cached: servedFromCache };
 }
 
 // Forex Rate Endpoint (Multi-Currency Support with Instant Cache Invalidation & Auto-Refresh)
 app.get('/api/forex/rate', async (req, res) => {
     const force = req.query.force === 'true' || req.query.refresh === 'true';
-    if (force) {
-        myCache.del('GLOBAL_FX_RATES');
-    }
     try {
         const quote = await getGlobalFxQuote(force);
         const { rates } = quote;
@@ -834,7 +847,6 @@ app.get('/api/forex/rate', async (req, res) => {
 
 // Explicit Cache Flush Endpoint
 app.post('/api/forex/refresh', async (req, res) => {
-    myCache.del('GLOBAL_FX_RATES');
     const quote = await getGlobalFxQuote(true);
     const { rates } = quote;
     res.json({
@@ -1050,6 +1062,39 @@ const SEED_SCREENER_CACHE = {
 
 const lastKnownScreenerCache = {};
 
+// Yahoo's chart endpoint answers the hosted API when its quote and screener
+// endpoints do not, so the tracked list can still be priced from real data.
+function fetchUniverseChart(symbol) {
+    return yahooFinance.chart(symbol, { period1: new Date(Date.now() - 10 * 86400000), interval: '1d' }, {
+        validateResult: false, fetchOptions: { signal: AbortSignal.timeout(4500) }
+    });
+}
+
+const universeNames = Object.fromEntries(Object.entries(SEED_INSTRUMENT_META).map(([symbol, meta]) => [symbol, meta.shortName]));
+
+function loadChartQuotes(symbols) {
+    return getOrLoad(`chart_quotes_${symbols.join(',')}`, 120,
+        () => loadChartUniverse(symbols, fetchUniverseChart, { names: universeNames }),
+        { shouldCache: rows => rows.length > 0 });
+}
+
+// Chart data has no market cap or P/E. Finnhub supplies both for US listings;
+// they change slowly, so one pass is kept for twelve hours.
+function loadUniverseValuations() {
+    if (!process.env.FINNHUB_API_KEY) return Promise.resolve({});
+    return getOrLoad('screener_valuations', 12 * 3600, async () => {
+        const listings = SCREENER_UNIVERSE.map(symbol => [symbol, finnhubSymbol(symbol)]).filter(([, ticker]) => ticker);
+        const found = await mapLimited(listings, 4, async ([symbol, ticker]) => {
+            const { data } = await axios.get(`${FINNHUB_URL}/stock/metric`, {
+                params: { symbol: ticker, metric: 'all', token: process.env.FINNHUB_API_KEY }, timeout: 4500
+            });
+            const valuation = valuationFromMetric(ticker, data);
+            return valuation && [symbol, valuation];
+        });
+        return Object.fromEntries(found.filter(Boolean));
+    }, { shouldCache: valuations => Object.keys(valuations).length > 0 });
+}
+
 function screenerFallback(type) {
     const cached = lastKnownScreenerCache[type];
     if (cached) return cached.map(quote => ({ ...quote, dataStatus: 'cached' }));
@@ -1097,9 +1142,10 @@ app.get('/api/screener/:type', async (req, res) => {
         }
 
         const cacheKey = `screener_${type}`;
-        const quotes = await getOrLoad(cacheKey, 120, async () => {
+        const { quotes, answered } = await getOrLoad(cacheKey, 120, async () => {
 
             let quotes = [];
+            let answered = false;
 
             // 1. For standard types, attempt Yahoo's predefined screener first during live market hours
             if (['day_gainers', 'day_losers', 'most_actives', 'undervalued_large_caps'].includes(type)) {
@@ -1115,6 +1161,10 @@ app.get('/api/screener/:type', async (req, res) => {
                     } else {
                         console.log(`Predefined screener unavailable for ${type} (${yfErr.message}). Using universe engine.`);
                     }
+                }
+                if (type === 'day_gainers' || type === 'day_losers') {
+                    const direction = type === 'day_gainers' ? 1 : -1;
+                    quotes = quotes.filter(quote => quote.regularMarketChangePercent * direction > 0);
                 }
             }
 
@@ -1140,8 +1190,23 @@ app.get('/api/screener/:type', async (req, res) => {
                     }
                 }
 
-                // 3. Finnhub Resilience Fallback: If Yahoo failed (e.g. 429 crumb limit), query Finnhub quotes
-                if (validQuotes.length === 0 && process.env.FINNHUB_API_KEY) {
+                // 3. Chart fallback: real prices for the whole tracked list, including NSE listings.
+                if (!hasScreenerCoverage(type, validQuotes, TECH_SYMBOLS)) {
+                    try {
+                        const needsValuations = type === 'tech_titans' || type === 'undervalued_large_caps';
+                        const [rows, valuations] = await Promise.all([
+                            loadChartQuotes(SCREENER_UNIVERSE),
+                            needsValuations ? loadUniverseValuations().catch(() => ({})) : {}
+                        ]);
+                        validQuotes = withValuations(rows, valuations);
+                    } catch (chartErr) {
+                        console.warn('Chart universe screener error:', chartErr.message);
+                    }
+                }
+
+                // 4. Finnhub Resilience Fallback: If Yahoo failed (e.g. 429 crumb limit), query Finnhub quotes
+                if (!hasScreenerCoverage(type, validQuotes, TECH_SYMBOLS) && process.env.FINNHUB_API_KEY &&
+                    ['day_gainers', 'day_losers', 'tech_titans'].includes(type)) {
                     try {
                         const usSymbols = SCREENER_UNIVERSE.filter(s => !s.endsWith('.NS') && !s.endsWith('.BO'));
                         const fhResults = await Promise.allSettled(
@@ -1177,43 +1242,16 @@ app.get('/api/screener/:type', async (req, res) => {
                     }
                 }
 
-                if (validQuotes.length > 0) {
-                    if (type === 'day_gainers') {
-                        quotes = validQuotes.filter(q => Number.isFinite(q.regularMarketChangePercent))
-                            .sort((a, b) => b.regularMarketChangePercent - a.regularMarketChangePercent)
-                            .slice(0, 15);
-                    } else if (type === 'day_losers') {
-                        quotes = validQuotes.filter(q => Number.isFinite(q.regularMarketChangePercent))
-                            .sort((a, b) => a.regularMarketChangePercent - b.regularMarketChangePercent)
-                            .slice(0, 15);
-                    } else if (type === 'most_actives') {
-                        quotes = validQuotes.filter(q => q.regularMarketVolume > 0)
-                            .sort((a, b) => b.regularMarketVolume - a.regularMarketVolume)
-                            .slice(0, 15);
-                    } else if (type === 'undervalued_large_caps') {
-                        quotes = [...validQuotes]
-                            .filter(q => q.currency === 'USD' && q.marketCap >= 40e9 && q.trailingPE > 0)
-                            .sort((a, b) => a.trailingPE - b.trailingPE)
-                            .slice(0, 15);
-                    } else if (type === 'tech_titans') {
-                        quotes = [...validQuotes]
-                            .filter(q => TECH_SYMBOLS.has(q.symbol))
-                            .sort((a, b) => (b.marketCap || 0) - (a.marketCap || 0))
-                            .slice(0, 15);
-                    } else if (type === 'indian_market') {
-                        quotes = [...validQuotes]
-                            .filter(q => q.symbol.endsWith('.NS') || q.symbol.endsWith('.BO'))
-                            .sort((a, b) => b.regularMarketChangePercent - a.regularMarketChangePercent)
-                            .slice(0, 15);
-                    }
-                }
+                // An up day can leave the losers list empty. That is an answer, not an outage.
+                answered = hasScreenerCoverage(type, validQuotes, TECH_SYMBOLS);
+                quotes = rankUniverse(type, validQuotes, TECH_SYMBOLS).map(quote => ({ ...quote, scope: 'tracked' }));
             }
 
             if (quotes.length > 0) lastKnownScreenerCache[type] = quotes;
-            return quotes;
-        }, { shouldCache: value => value.length > 0 });
+            return { quotes, answered: answered || quotes.length > 0 };
+        }, { shouldCache: value => value.answered });
 
-        res.json(quotes.length > 0 ? quotes : screenerFallback(type));
+        res.json(answered ? quotes : screenerFallback(type));
     } catch (e) {
         console.error(`Screener provider error (${req.params.type}):`, e.message);
         // Fallback to seeded baseline cache even if an unexpected error occurs so UI never blanks out
@@ -1249,37 +1287,19 @@ app.post('/api/alerts', async (req, res) => {
 });
 
 app.delete('/api/alerts/:id', async (req, res) => {
-    if (req.params.id) await Alert.findOneAndDelete({ _id: req.params.id, userId: req.user.uid });
+    if (mongoose.isObjectIdOrHexString(req.params.id)) await Alert.findOneAndDelete({ _id: req.params.id, userId: req.user.uid });
     res.send("Deleted");
 });
 
 // --- 6. AI Analyst ---
 app.post('/api/ai-analysis', aiAnalysisLimiter, async (req, res) => {
     try {
-        const { symbol, price, rsi, sentiment, news, currency } = req.body;
-        const curCode = currency ? currency.toUpperCase() : inferCurrencyFromSymbol(symbol);
-        const curSym = getCurrencySymbol(curCode);
-        const newsItems = Array.isArray(news) ? news : [];
-        const newsSummary = newsItems.slice(0, 2).map(n => n?.title || '').filter(Boolean).join(". ");
-        
-        let analysisText = "";
-        let source = "model";
-        try {
-            const chatCompletion = await groq.chat.completions.create({
-                messages: [{ role: "user", content: `Analyze ${symbol}. Price: ${curSym}${price} (${curCode}), RSI: ${rsi}, Sentiment: ${sentiment}. News: ${newsSummary}. Summarize the supplied indicators and headlines in three sentences. Keep observations tied to the supplied data and avoid price predictions or trading instructions.` }],
-                model: "llama-3.1-8b-instant",
-            });
-            analysisText = chatCompletion.choices[0].message.content;
-        } catch (groqErr) {
-            console.error("Groq API error:", groqErr.message);
-            source = "indicator";
-            const rsiNum = Number.parseFloat(rsi);
-            const rsiVerdict = rsiNum > 65 ? "overbought momentum, signaling potential consolidation" : rsiNum < 35 ? "oversold conditions, indicating potential mean-reversion buying interest" : "balanced neutral momentum";
-            analysisText = Number.isFinite(rsiNum)
-                ? `RSI is ${rsiNum.toFixed(1)}. The indicator suggests ${rsiVerdict}. Headline sentiment: ${sentiment || 'unavailable'}.`
-                : 'RSI is unavailable. Load more price history to calculate momentum.';
+        const request = parseAnalysisRequest(req.body, stockSymbolPattern);
+        if (!request) {
+            return res.status(400).json({ error: 'Provide a valid symbol, price, RSI, sentiment, and currency.' });
         }
-        res.json({ analysis: analysisText, source });
+        const curCode = request.currencyCode || inferCurrencyFromSymbol(request.symbol);
+        res.json(await summarizeStock({ ...request, currencySymbol: getCurrencySymbol(curCode), currencyCode: curCode }));
     } catch (error) {
         res.status(500).json({ error: 'Could not generate an indicator summary.' });
     }
@@ -1422,7 +1442,10 @@ app.post('/api/quant/simulate', quantSimulationLimiter, quantConcurrencyLimit, a
             correlationMatrix: finalCorr
         };
 
-        const cppResult = await runCppQuantEngine(inputPayload);
+        // Stop the engine when the browser gives up, so its slot is free again.
+        const disconnected = new AbortController();
+        res.on('close', () => { if (!res.writableEnded) disconnected.abort(); });
+        const cppResult = await runCppQuantEngine(inputPayload, { signal: disconnected.signal });
 
         res.json({
             success: true,
@@ -1445,12 +1468,16 @@ app.post('/api/quant/simulate', quantSimulationLimiter, quantConcurrencyLimit, a
             }
         });
     } catch (error) {
+        if (res.destroyed) return;
         console.error("Quant Simulation Error:", error);
         res.status(500).json({ error: "The simulation engine could not complete this request." });
     } finally {
         res.locals.releaseQuantSlot();
     }
 });
+
+app.use(notFound);
+app.use(errorHandler());
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server running on port ${PORT}`));

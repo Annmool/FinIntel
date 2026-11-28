@@ -166,8 +166,10 @@ export function convertPrice(amount, fromCurrency, toCurrency, fxRates = DEFAULT
   const to = getCurrencyCode(toCurrency);
   if (from === to) return num;
   const rates = { ...DEFAULT_FX_RATES, ...fxRates };
-  const fromRate = from === 'GBX' ? rates.GBP * 100 : rates[from] || 1.0;
-  const toRate = to === 'GBX' ? rates.GBP * 100 : rates[to] || 1.0;
+  const fromRate = from === 'GBX' ? rates.GBP * 100 : rates[from];
+  const toRate = to === 'GBX' ? rates.GBP * 100 : rates[to];
+  // A missing rate is unknown, never 1:1. Callers show the amount as unavailable.
+  if (!(fromRate > 0) || !(toRate > 0)) return NaN;
   // Convert from -> USD -> to
   const inUsd = num / fromRate;
   return inUsd * toRate;

@@ -6,17 +6,20 @@ import { getCurrencySymbol, formatPrice } from './utils/currency';
 
 const TickerTape = () => {
     const [stocks, setStocks] = useState(() => {
-        const cached = localStorage.getItem('finintel_ticker');
-        try { return cached ? JSON.parse(cached) : []; } catch(e) { return []; }
+        // Storage access itself can throw when the browser blocks site data.
+        try {
+            const cached = JSON.parse(localStorage.getItem('finintel_ticker'));
+            return Array.isArray(cached) ? cached : [];
+        } catch (e) { return []; }
     });
 
     useEffect(() => {
         const fetchTicker = () => {
             axios.get(`${API_URL}/api/ticker-tape`)
                 .then(res => { 
-                    if (res.data && res.data.length > 0) {
+                    if (Array.isArray(res.data) && res.data.length > 0) {
                         setStocks(res.data);
-                        localStorage.setItem('finintel_ticker', JSON.stringify(res.data));
+                        try { localStorage.setItem('finintel_ticker', JSON.stringify(res.data)); } catch (e) {}
                     }
                 })
                 .catch(() => {});

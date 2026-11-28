@@ -1,6 +1,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const isWindows = process.platform === 'win32';
 const BINARY_NAME = isWindows ? 'quant_engine.exe' : 'quant_engine';
@@ -100,15 +101,28 @@ const PRESETS = {
   }
 };
 
+// A throttled container can report every host core. Running eight OpenMP
+// threads on a fraction of one CPU made the hosted engine about 20 times
+// slower than a laptop, so the thread count follows QUANT_THREADS when set and
+// the CPUs Node can actually use otherwise.
+function quantThreadCount(configured, available) {
+  const requested = Number(configured);
+  const count = Number.isInteger(requested) && requested > 0 ? requested : available;
+  return Math.max(1, Math.min(8, Number.isInteger(count) ? count : 1));
+}
+
 /**
- * Executes the native C++ quantitative binary via child process streaming
+ * Executes the native C++ quantitative binary via child process streaming.
+ * Aborting the signal stops the process so an abandoned request frees its slot.
  */
-async function runCppQuantEngine(inputData) {
+async function runCppQuantEngine(inputData, { signal } = {}) {
   await ensureBinaryExists();
+  if (signal?.aborted) throw new Error('Simulation cancelled.');
   return new Promise((resolve, reject) => {
+    const threads = quantThreadCount(process.env.QUANT_THREADS, os.availableParallelism?.() ?? os.cpus().length);
     const child = spawn(QUANT_BINARY, [], {
       windowsHide: true,
-      env: extendedEnv
+      env: { ...extendedEnv, OMP_NUM_THREADS: String(threads) }
     });
 
     let stdoutData = '';
@@ -121,6 +135,16 @@ async function runCppQuantEngine(inputData) {
         reject(new Error('C++ quant simulation timed out after 120 seconds.'));
       }
     }, 120000);
+
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.kill();
+      reject(new Error('Simulation cancelled.'));
+    };
+    signal?.addEventListener('abort', cancel, { once: true });
+    child.once('close', () => signal?.removeEventListener('abort', cancel));
 
     const failForOutputLimit = () => {
       if (settled) return;
@@ -288,6 +312,7 @@ module.exports = {
   PRESETS,
   runCppQuantEngine,
   runJsMonteCarloBenchmark,
+  quantThreadCount,
   computeAssetParameters,
   isPositiveSemidefinite
 };

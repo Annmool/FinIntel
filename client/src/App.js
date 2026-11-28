@@ -50,14 +50,18 @@ import {
   convertPrice,
   formatLargeCap
 } from './utils/currency';
+import { portfolioCsvRows, toCsv } from './utils/exportCsv';
 import { auth, provider, signInWithPopup, signOut } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 
 import { API_URL } from './apiConfig';
-const UPTIMEROBOT_STATUS_URL = 'https://dashboard.uptimerobot.com/monitors/803125214';
+
+function paperOrderSignature(uid, side, symbol, qty) {
+  return JSON.stringify([uid, side, symbol, qty]);
+}
 
 function App() {
-  const pendingPaperOrder = useRef(null);
+  const pendingPaperOrders = useRef(new Map());
   const submittingOrder = useRef(false);
   const balanceRequest = useRef(0);
   const stockRequest = useRef(0);
@@ -74,7 +78,15 @@ function App() {
   const [paperHistoryRefresh, setPaperHistoryRefresh] = useState(0);
   const [editingHolding, setEditingHolding] = useState(null);
   const [alerts, setAlerts] = useState([]);
-  const [theme, setTheme] = useState('dark');
+  const [accountStatus, setAccountStatus] = useState('idle'); // 'idle' | 'loading' | 'ready' | 'error'
+  const [apiStatus, setApiStatus] = useState('checking'); // 'checking' | 'online' | 'offline'
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem('finintel_theme') === 'light' ? 'light' : 'dark';
+    } catch {
+      return 'dark';
+    }
+  });
   const [briefing, setBriefing] = useState([]);
   const [briefingLoading, setBriefingLoading] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -193,6 +205,7 @@ function App() {
     const url = `${API_URL}/api/forex/rate?force=${force ? 'true' : 'false'}&_t=${Date.now()}`;
     axios.get(url)
       .then(res => {
+        setApiStatus('online');
         const rateVal = parseFloat(res.data?.rate);
         if (Number.isFinite(rateVal) && rateVal > 0) {
           setFxRate(rateVal);
@@ -225,6 +238,7 @@ function App() {
         }
       })
       .catch(() => {
+        setApiStatus('offline');
         setPortfolioFxRates({});
         if (force) {
           showToast('Using local exchange rates (backend connecting...)', 'error');
@@ -255,24 +269,27 @@ function App() {
   const fetchPaperPortfolio = useCallback(async (uid) => {
     try {
       const { data } = await axios.get(`${API_URL}/api/paper-portfolio/${uid}`);
-      if (auth.currentUser?.uid !== uid) return;
+      if (auth.currentUser?.uid !== uid) return true;
       setPaperPortfolio(data);
-    } catch (e) {}
+      return true;
+    } catch (e) { return false; }
   }, []);
 
   const fetchWatchlist = async (uid) => {
     try {
       const res = await axios.get(`${API_URL}/api/watchlist/${uid}`);
       if (auth.currentUser?.uid === uid) setWatchlist(res.data);
-    } catch (e) {}
+      return true;
+    } catch (e) { return false; }
   };
 
   const fetchPortfolio = useCallback(async (uid) => {
     try {
       const { data } = await axios.get(`${API_URL}/api/portfolio/${uid}`);
-      if (auth.currentUser?.uid !== uid) return;
+      if (auth.currentUser?.uid !== uid) return true;
       setPortfolio(data);
-    } catch (e) {}
+      return true;
+    } catch (e) { return false; }
   }, []);
 
   useEffect(() => {
@@ -326,11 +343,27 @@ function App() {
     try {
       const res = await axios.get(`${API_URL}/api/alerts/${uid}`);
       if (auth.currentUser?.uid === uid) setAlerts(res.data);
-    } catch (e) {}
+      return true;
+    } catch (e) { return false; }
   };
+
+  // An empty list after a failed request looks like an account with nothing in
+  // it, so the first load reports whether every account request succeeded.
+  const loadAccount = async (uid) => {
+    setAccountStatus('loading');
+    fetchVirtualBalance(uid);
+    const results = await Promise.all([fetchWatchlist(uid), fetchPortfolio(uid), fetchPaperPortfolio(uid), fetchAlerts(uid)]);
+    if (auth.currentUser?.uid === uid) setAccountStatus(results.every(Boolean) ? 'ready' : 'error');
+  };
+  // The sign-in listener is registered once; it reaches the current loader through this ref.
+  const loadAccountRef = useRef(loadAccount);
+  loadAccountRef.current = loadAccount;
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
+    try {
+      localStorage.setItem('finintel_theme', theme);
+    } catch {}
   }, [theme]);
 
   useEffect(() => {
@@ -345,13 +378,8 @@ function App() {
       setPortfolioPrices({});
       setVirtualBalance(null);
       setBalanceLoading(false);
-      if (u) {
-        fetchWatchlist(u.uid);
-        fetchPortfolio(u.uid);
-        fetchPaperPortfolio(u.uid);
-        fetchAlerts(u.uid);
-        fetchVirtualBalance(u.uid);
-      }
+      setAccountStatus('idle');
+      if (u) loadAccountRef.current(u.uid);
     });
 
     const fetchBriefing = () => {
@@ -497,7 +525,7 @@ function App() {
       const existingItem = watchlist.find(item => item.symbol === currentSymbol);
       if (existingItem) {
         try {
-          await axios.delete(`${API_URL}/api/watchlist/${currUser.uid}/${currentSymbol}`);
+          await axios.delete(`${API_URL}/api/watchlist/${currUser.uid}/${encodeURIComponent(currentSymbol)}`);
           fetchWatchlist(currUser.uid);
           showToast(`Removed ${currentSymbol} from watchlist`);
         } catch (e) {
@@ -574,6 +602,18 @@ function App() {
     }
   };
 
+  const closeOrderModal = useCallback(() => {
+    if (submittingOrder.current) return;
+    setOrderModal(prev => ({ ...prev, isOpen: false }));
+  }, []);
+
+  useEffect(() => {
+    if (!orderModal.isOpen) return undefined;
+    const onKeyDown = event => { if (event.key === 'Escape') closeOrderModal(); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [orderModal.isOpen, closeOrderModal]);
+
   const executeModalOrder = async () => {
     if (submittingOrder.current) return;
     let currUser = user;
@@ -592,22 +632,23 @@ function App() {
     submittingOrder.current = true;
     setOrderModal(prev => ({ ...prev, isSubmitting: true, error: '' }));
 
+    let signature;
     try {
       if (orderModal.type === 'BUY' || orderModal.type === 'SELL') {
         const qty = Number(orderModal.qty);
         if (!Number.isFinite(qty) || qty <= 0) throw new Error('Please enter a valid share quantity.');
 
         const side = orderModal.type.toLowerCase();
-        const signature = JSON.stringify([currUser.uid, side, orderModal.symbol, qty]);
-        if (pendingPaperOrder.current?.signature !== signature) {
-          pendingPaperOrder.current = { signature, id: crypto.randomUUID() };
+        signature = paperOrderSignature(currUser.uid, side, orderModal.symbol, qty);
+        if (!pendingPaperOrders.current.has(signature)) {
+          pendingPaperOrders.current.set(signature, crypto.randomUUID());
         }
         const { data: fill } = await axios.post(`${API_URL}/api/paper-portfolio/${side}`, {
           symbol: orderModal.symbol,
           qty,
-          orderId: pendingPaperOrder.current.id
+          orderId: pendingPaperOrders.current.get(signature)
         });
-        pendingPaperOrder.current = null;
+        pendingPaperOrders.current.delete(signature);
         if (auth.currentUser?.uid === currUser.uid) {
           fetchVirtualBalance(currUser.uid);
           fetchPaperPortfolio(currUser.uid);
@@ -649,6 +690,7 @@ function App() {
         showToast(`Alert registered: ${orderModal.symbol} ${orderModal.alertCondition} ${getCurrencySymbol(orderModal.currency)}${formatPrice(parsedTarget, orderModal.currency)}`);
       }
     } catch (err) {
+      if (signature && [400, 409].includes(err.response?.status)) pendingPaperOrders.current.delete(signature);
       const errorMsg = err.response?.data?.error || err.message || 'Order execution failed.';
       setOrderModal(prev => ({ ...prev, isSubmitting: false, error: errorMsg }));
     } finally {
@@ -784,14 +826,15 @@ function App() {
       ]);
 
       if (type === 'csv') {
-        const csvContent = 'data:text/csv;charset=utf-8,' + [headers, ...rows].map(e => e.join(',')).join('\n');
-        const encodedUri = encodeURI(csvContent);
+        const blob = new Blob([String.fromCharCode(0xFEFF) + toCsv(portfolioCsvRows(portfolioHoldingsWithPnL, baseCurrency))], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
-        link.setAttribute('href', encodedUri);
+        link.setAttribute('href', url);
         link.setAttribute('download', `FinIntel_Portfolio_${baseCurrency}_${new Date().toISOString().split('T')[0]}.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(url);
         showToast('Exported CSV report');
       } else if (type === 'pdf') {
         const doc = new jsPDF();
@@ -986,10 +1029,15 @@ function App() {
                   className="sidebar-item-del"
                   onClick={async (e) => {
                     e.stopPropagation();
-                    await axios.delete(`${API_URL}/api/watchlist/${user.uid}/${item.symbol}`);
+                    try {
+                      await axios.delete(`${API_URL}/api/watchlist/${user.uid}/${encodeURIComponent(item.symbol)}`);
+                    } catch (error) {
+                      showToast(`Could not remove ${item.symbol}. Try again.`, 'error');
+                    }
                     fetchWatchlist(user.uid);
                   }}
                   title="Remove from Watchlist"
+                  aria-label={`Remove ${item.symbol} from watchlist`}
                 >
                   ✕
                 </button>
@@ -1031,8 +1079,13 @@ function App() {
                 </div>
                 <button
                   className="sidebar-item-del"
+                  aria-label={`Delete ${a.symbol} price trigger`}
                   onClick={async () => {
-                    await axios.delete(`${API_URL}/api/alerts/${a._id}`);
+                    try {
+                      await axios.delete(`${API_URL}/api/alerts/${a._id}`);
+                    } catch (error) {
+                      showToast(`Could not delete the ${a.symbol} trigger. Try again.`, 'error');
+                    }
                     fetchAlerts(user.uid);
                   }}
                 >
@@ -1073,19 +1126,17 @@ function App() {
               </button>
             )}
 
-            <a
-              href={UPTIMEROBOT_STATUS_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="uptime-strip"
-              title="Monitor Uptime"
-            >
+            <div className="uptime-strip" role="status" title="Based on the dashboard's most recent request to the FinIntel API">
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <span className="status-dot"></span>
-                <span>System Operational</span>
+                <span
+                  className="status-dot"
+                  style={apiStatus === 'online' ? undefined : { background: apiStatus === 'offline' ? 'var(--danger)' : 'var(--warning)', boxShadow: 'none', animation: 'none' }}
+                ></span>
+                <span>
+                  {apiStatus === 'online' ? 'API connected' : apiStatus === 'offline' ? 'API unreachable' : 'Connecting to API…'}
+                </span>
               </div>
-              <span>100%</span>
-            </a>
+            </div>
             <div className="creator-credit">
               Made by Anmol · <a href="https://heyanmol.netlify.app" target="_blank" rel="noreferrer">Portfolio</a>
             </div>
@@ -1141,6 +1192,7 @@ function App() {
               {symbol ? (
                 <button
                   className="search-clear-btn"
+                  aria-label="Clear search"
                   onClick={() => { setSymbol(''); setSuggestions([]); setShowSuggestions(false); }}
                 >
                   <X size={14} />
@@ -1239,7 +1291,7 @@ function App() {
                   <div
                     key={i}
                     className="news-article-card"
-                    onClick={() => window.open(n.url, '_blank')}
+                    onClick={() => window.open(n.url, '_blank', 'noopener,noreferrer')}
                   >
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
@@ -1285,7 +1337,7 @@ function App() {
                           {stockCurrency}
                         </span>
                       </span>
-                      {stockCurrency !== baseCurrency && (
+                      {stockCurrency !== baseCurrency && Number.isFinite(convertPrice(1, stockCurrency, baseCurrency, fxRates)) && (
                         <span className="term-badge neutral font-mono" style={{ fontSize: '0.8rem', padding: '2px 8px' }}>
                           ≈ {baseCurSymbol}{formatPrice(convertPrice(data?.values?.[0]?.close || 0, stockCurrency, baseCurrency, fxRates), baseCurrency)} {baseCurrency}
                         </span>
@@ -1412,7 +1464,7 @@ function App() {
                       <div
                         key={i}
                         className="news-article-card"
-                        onClick={() => window.open(n.url, '_blank')}
+                        onClick={() => window.open(n.url, '_blank', 'noopener,noreferrer')}
                       >
                         <div>
                           <span className="news-source-badge">{n.source?.name || 'Filing'}</span>
@@ -1500,6 +1552,17 @@ function App() {
 
 
               </div>
+              {user && accountStatus === 'error' && (
+                <div className="dashboard-span-12 order-validation-msg neg" role="alert" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                  <span>Some of your account data could not be loaded, so lists below may look empty. The server can take up to a minute to wake after a quiet period.</span>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => loadAccount(user.uid)}>Retry</button>
+                </div>
+              )}
+              {apiStatus === 'checking' && (
+                <p className="dashboard-span-12 panel-subtitle" role="status" style={{ margin: 0 }}>
+                  Connecting to the FinIntel API. The first request after a quiet period can take up to a minute.
+                </p>
+              )}
               {/* Question 1 & 2: Multi-Currency Valuation, Cost Basis, Buying Power & Risk Node */}
               <div className="dashboard-span-12">
                 <div className="portfolio-summary-bar">
@@ -1662,9 +1725,14 @@ function App() {
                                   <button
                                     className="btn btn-danger btn-sm"
                                     onClick={async () => {
-                                      await axios.delete(`${API_URL}/api/portfolio/${p._id}`);
+                                      if (!window.confirm(`Remove ${p.qty} ${p.symbol} from your portfolio? Its purchase price history is deleted too.`)) return;
+                                      try {
+                                        await axios.delete(`${API_URL}/api/portfolio/${p._id}`);
+                                        showToast(`Removed ${p.symbol} from portfolio`);
+                                      } catch (e) {
+                                        showToast(`Could not remove ${p.symbol}. Try again.`, 'error');
+                                      }
                                       fetchPortfolio(user.uid);
-                                      showToast(`Removed ${p.symbol} from portfolio`);
                                     }}
                                     title="Delete holding"
                                   >
@@ -1678,6 +1746,10 @@ function App() {
                       </tbody>
                     </table>
                   </div>
+                ) : user && accountStatus === 'loading' ? (
+                  <p role="status" style={{ padding: '36px 16px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.82rem' }}>
+                    Loading your holdings…
+                  </p>
                 ) : (
                   <div className="holdings-empty-state">
                     <div className="empty-icon-wrap">
@@ -1759,7 +1831,7 @@ function App() {
                     {briefing.slice(0, 5).map((n, i) => (
                       <div
                         key={i}
-                        onClick={() => window.open(n.url, '_blank')}
+                        onClick={() => window.open(n.url, '_blank', 'noopener,noreferrer')}
                         style={{
                           padding: '10px 12px',
                           background: 'var(--bg-surface-elevated)',
@@ -1881,12 +1953,10 @@ function App() {
         <div
           className="order-modal-backdrop"
           onClick={(e) => {
-            if (e.target === e.currentTarget && !orderModal.isSubmitting) {
-              setOrderModal(prev => ({ ...prev, isOpen: false }));
-            }
+            if (e.target === e.currentTarget) closeOrderModal();
           }}
         >
-          <div className="order-modal-card">
+          <div className="order-modal-card" role="dialog" aria-modal="true" aria-label={`${orderModal.type === 'BUY' ? 'Paper buy' : orderModal.type === 'SELL' ? 'Paper sell' : orderModal.type === 'PORTFOLIO' ? 'Add holding' : 'Price alert'} ${orderModal.symbol}`}>
             <div className="order-modal-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <span className={`term-badge font-mono ${orderModal.type === 'BUY' ? 'pos' : orderModal.type === 'SELL' ? 'neg' : 'neutral'}`}>
@@ -1896,7 +1966,7 @@ function App() {
               </div>
               <button
                 className="order-modal-close"
-                onClick={() => !orderModal.isSubmitting && setOrderModal(prev => ({ ...prev, isOpen: false }))}
+                onClick={closeOrderModal}
                 aria-label="Close"
               >
                 <X size={18} />
@@ -1913,7 +1983,9 @@ function App() {
                     {getCurrencySymbol(orderModal.currency)}{formatPrice(orderModal.price, orderModal.currency)}
                     {orderModal.currency !== 'USD' && (
                       <span className="order-price-converted">
-                        ≈ ${convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates).toFixed(2)} USD
+                        {Number.isFinite(convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates))
+                          ? `≈ $${convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates).toFixed(2)} USD`
+                          : 'USD estimate unavailable'}
                       </span>
                     )}
                   </div>
@@ -1975,11 +2047,12 @@ function App() {
                     </button>
                   </div>
 
-                  <label className="order-input-label" style={{ marginTop: '14px' }}>
+                  <label className="order-input-label" style={{ marginTop: '14px' }} htmlFor="alert-target-price">
                     Target Trigger Price ({orderModal.currency})
                   </label>
                   <div className="order-qty-row">
                     <input
+                      id="alert-target-price"
                       type="number"
                       step="any"
                       min="0.01"
@@ -1992,18 +2065,20 @@ function App() {
                 </div>
               ) : (
                 <div className="order-input-group">
-                  <label className="order-input-label">
+                  <label className="order-input-label" htmlFor="order-quantity">
                     {orderModal.type === 'PORTFOLIO' ? 'Shares to Record' : 'Order Quantity (Shares)'}
                   </label>
                   <div className="order-qty-row">
                     <button
                       type="button"
                       className="order-qty-step-btn"
+                      aria-label="Decrease quantity by 1"
                       onClick={() => setOrderModal(prev => ({ ...prev, qty: Math.max(1, (parseFloat(prev.qty) || 1) - 1), error: '' }))}
                     >
                       -
                     </button>
                     <input
+                      id="order-quantity"
                       type="number"
                       step="any"
                       min="0.0001"
@@ -2016,6 +2091,7 @@ function App() {
                     <button
                       type="button"
                       className="order-qty-step-btn"
+                      aria-label="Increase quantity by 1"
                       onClick={() => setOrderModal(prev => ({ ...prev, qty: (parseFloat(prev.qty) || 0) + 1, error: '' }))}
                     >
                       +
@@ -2029,16 +2105,17 @@ function App() {
                         key={n}
                         type="button"
                         className="order-preset-pill"
+                        aria-label={`Set quantity to ${n}`}
                         onClick={() => setOrderModal(prev => ({ ...prev, qty: n, error: '' }))}
                       >
-                        +{n}
+                        {n}
                       </button>
                     ))}
                     {orderModal.type === 'BUY' && (
                       <button
                         type="button"
                         className="order-preset-pill max-btn"
-                        disabled={balanceUnavailable}
+                        disabled={balanceUnavailable || !Number.isFinite(convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates))}
                         onClick={() => {
                           const priceUsd = convertPrice(orderModal.price, orderModal.currency, 'USD', fxRates);
                           const maxShares = priceUsd > 0 ? Math.floor(virtualBalance / priceUsd) : 0;
@@ -2081,13 +2158,16 @@ function App() {
                     {orderModal.currency !== 'USD' && (
                       <div className="order-calc-row">
                         <span className="order-calc-label">Normalized Total (USD)</span>
-                        <span className="order-calc-val font-mono">≈ ${totalUsd.toFixed(2)} USD</span>
+                        <span className="order-calc-val font-mono">
+                          {Number.isFinite(totalUsd) ? `≈ $${totalUsd.toFixed(2)} USD` : `Unavailable · no ${orderModal.currency} exchange rate`}
+                        </span>
                       </div>
                     )}
                     <div className="order-calc-row">
                       <span className="order-calc-label">Estimated Cash Balance</span>
                       <span className={`order-calc-val font-mono ${isInsufficient ? 'neg' : ''}`}>
-                        {balanceUnavailable ? balanceStatus : `$${formatPrice(Math.max(0, remainingCash), 'USD')} USD`}
+                        {balanceUnavailable ? balanceStatus
+                          : Number.isFinite(remainingCash) ? `$${formatPrice(Math.max(0, remainingCash), 'USD')} USD` : 'Unavailable'}
                       </span>
                     </div>
                     <p className="order-calc-label">The fill uses a recent server-verified quote.</p>
@@ -2105,7 +2185,12 @@ function App() {
                 );
               })()}
 
-              {/* Error message from backend */}
+              {user && (orderModal.type === 'BUY' || orderModal.type === 'SELL') && !orderModal.isSubmitting &&
+                pendingPaperOrders.current.has(paperOrderSignature(user.uid, orderModal.type.toLowerCase(), orderModal.symbol, Number(orderModal.qty))) && (
+                <p role="status" className="order-calc-label">
+                  A previous submission for this quantity is unconfirmed. Submit again to check its outcome without placing a duplicate order.
+                </p>
+              )}
               {orderModal.error && (
                 <div className="order-validation-msg neg">
                   {orderModal.error}
@@ -2118,7 +2203,7 @@ function App() {
                 type="button"
                 className="btn btn-secondary"
                 disabled={orderModal.isSubmitting}
-                onClick={() => setOrderModal(prev => ({ ...prev, isOpen: false }))}
+                onClick={closeOrderModal}
               >
                 Cancel
               </button>
