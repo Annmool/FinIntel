@@ -18,6 +18,7 @@ const { isFreshAlertQuote, recordAlertReceipt } = require('./services/alertRecei
 const { createHoldingMarks } = require('./services/holdingMarks');
 const { apiKeys, createPriceFeeds } = require('./services/priceFeeds');
 const { createMetalsFeed } = require('./services/metals');
+const { DEFAULT_MODEL: DEFAULT_ANALYST_MODEL, createAnalyst } = require('./services/analyst');
 const YahooFinance = require('yahoo-finance2').default;
 const yahooFinance = new YahooFinance({
     suppressNotices: ['yahooSurvey'],
@@ -57,6 +58,7 @@ const myCache = new NodeCache({ stdTTL: 60, checkperiod: 120, useClones: false }
 const inFlightRequests = new Map();
 axios.defaults.timeout = 10000;
 const groq = new Groq({ apiKey: process.env.GROQ_KEY });
+const summarizeStock = createAnalyst({ groq, model: process.env.GROQ_MODEL || DEFAULT_ANALYST_MODEL });
 
 admin.initializeApp({ projectId: process.env.FIREBASE_PROJECT_ID || 'finintel-a64ec' });
 
@@ -1262,24 +1264,10 @@ app.post('/api/ai-analysis', aiAnalysisLimiter, async (req, res) => {
         const newsItems = Array.isArray(news) ? news : [];
         const newsSummary = newsItems.slice(0, 2).map(n => n?.title || '').filter(Boolean).join(". ");
         
-        let analysisText = "";
-        let source = "model";
-        try {
-            const chatCompletion = await groq.chat.completions.create({
-                messages: [{ role: "user", content: `Analyze ${symbol}. Price: ${curSym}${price} (${curCode}), RSI: ${rsi}, Sentiment: ${sentiment}. News: ${newsSummary}. Summarize the supplied indicators and headlines in three sentences. Keep observations tied to the supplied data and avoid price predictions or trading instructions.` }],
-                model: "llama-3.1-8b-instant",
-            });
-            analysisText = chatCompletion.choices[0].message.content;
-        } catch (groqErr) {
-            console.error("Groq API error:", groqErr.message);
-            source = "indicator";
-            const rsiNum = Number.parseFloat(rsi);
-            const rsiVerdict = rsiNum > 65 ? "overbought momentum, signaling potential consolidation" : rsiNum < 35 ? "oversold conditions, indicating potential mean-reversion buying interest" : "balanced neutral momentum";
-            analysisText = Number.isFinite(rsiNum)
-                ? `RSI is ${rsiNum.toFixed(1)}. The indicator suggests ${rsiVerdict}. Headline sentiment: ${sentiment || 'unavailable'}.`
-                : 'RSI is unavailable. Load more price history to calculate momentum.';
-        }
-        res.json({ analysis: analysisText, source });
+        res.json(await summarizeStock({
+            symbol, price, currencySymbol: curSym, currencyCode: curCode, rsi, sentiment,
+            headlines: newsSummary ? [newsSummary] : []
+        }));
     } catch (error) {
         res.status(500).json({ error: 'Could not generate an indicator summary.' });
     }
